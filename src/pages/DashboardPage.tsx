@@ -124,7 +124,13 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
 
       <LiveSetupModal
         isOpen={isLiveSetupOpen}
+        userId={userId}
+        currentBalanceUSD={balanceUSD}
         onClose={() => setIsLiveSetupOpen(false)}
+        onTopUpClick={() => {
+          setIsLiveSetupOpen(false)
+          setIsTopUpOpen(true)
+        }}
       />
     </DashboardLayout>
   )
