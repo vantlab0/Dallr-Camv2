@@ -28,6 +28,7 @@ function AppContent() {
 
   return (
     <DashboardPage
+      userId={user.id}
       userEmail={user.email}
       displayName={profile?.display_name || user.displayName}
       onSignOut={signOut}

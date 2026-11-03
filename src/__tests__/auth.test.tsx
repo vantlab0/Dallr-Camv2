@@ -20,11 +20,44 @@ vi.mock('../lib/supabase', () => {
           },
         })),
       },
-      from: vi.fn(() => ({
+      channel: vi.fn(() => ({
+        on: vi.fn().mockReturnThis(),
+        subscribe: vi.fn().mockReturnValue({}),
+      })),
+      removeChannel: vi.fn(),
+      functions: {
+        invoke: vi.fn().mockResolvedValue({
+          data: {
+            usd_to_ngn_rate: 1550,
+            wallet_currency: 'USD',
+            payment_currency: 'NGN',
+            minimum_top_up_usd: 15,
+            live_usage_rate_per_second_usd: 0.04,
+            updated_at: new Date().toISOString(),
+          },
+          error: null,
+        }),
+      },
+      from: vi.fn((table: string) => ({
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
-        maybeSingle: vi.fn().mockImplementation(() =>
-          Promise.resolve({
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockImplementation(() => Promise.resolve({ data: [], error: null })),
+        maybeSingle: vi.fn().mockImplementation(() => {
+          if (table === 'wallets') {
+            return Promise.resolve({
+              data: {
+                id: 'w-1',
+                user_id: 'usr-456',
+                currency: 'USD',
+                balance: 10000,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              },
+              error: null,
+            })
+          }
+          return Promise.resolve({
             data: {
               id: 'usr-123',
               email: 'mock@dallr.app',
@@ -32,7 +65,7 @@ vi.mock('../lib/supabase', () => {
             },
             error: null,
           })
-        ),
+        }),
         upsert: vi.fn().mockReturnValue({
           select: vi.fn().mockReturnValue({
             maybeSingle: vi.fn().mockResolvedValue({

@@ -3,22 +3,39 @@ import { DashboardLayout } from '@/components/dashboard/DashboardLayout'
 import { BalanceCard } from '@/components/dashboard/BalanceCard'
 import { QuickActionCard } from '@/components/dashboard/QuickActionCard'
 import { TopUpModal } from '@/components/wallet/TopUpModal'
+import { TransactionHistory } from '@/components/wallet/TransactionHistory'
 import { LiveSetupModal } from '@/components/live/LiveSetupModal'
 import { useWallet } from '@/hooks/useWallet'
 import { Layers, ShieldCheck, Zap } from 'lucide-react'
 
 interface DashboardPageProps {
+  userId?: string
   userEmail: string
   displayName?: string
   onSignOut: () => void
 }
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({
+  userId,
   userEmail,
   displayName,
   onSignOut,
 }) => {
-  const { balanceUSD, exchangeRateUSDToNGN, isLoading, topUp, simulateRefresh } = useWallet()
+  const {
+    balanceUSD,
+    exchangeRateUSDToNGN,
+    minimumTopUpUSD,
+    transactions,
+    isLoading,
+    isProcessing,
+    error,
+    paymentFeedback,
+    refreshWallet,
+    startTopUpPayment,
+    checkPaymentVerification,
+    clearFeedback,
+  } = useWallet({ userId })
+
   const [isTopUpOpen, setIsTopUpOpen] = useState(false)
   const [isLiveSetupOpen, setIsLiveSetupOpen] = useState(false)
 
@@ -53,14 +70,21 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             <BalanceCard
               balanceUSD={balanceUSD}
               isLoading={isLoading}
+              isProcessing={isProcessing}
+              error={error}
+              paymentFeedback={paymentFeedback}
               onTopUpClick={() => setIsTopUpOpen(true)}
-              onRefresh={simulateRefresh}
+              onRefresh={refreshWallet}
+              onClearFeedback={clearFeedback}
             />
           </div>
           <div className="md:col-span-2">
             <QuickActionCard onStartCall={() => setIsLiveSetupOpen(true)} />
           </div>
         </div>
+
+        {/* Transaction History Ledger */}
+        <TransactionHistory transactions={transactions} isLoading={isLoading} />
 
         {/* Additional Studio Meta / System Specs Card */}
         <div className="rounded-xl border border-[#27272a] bg-[#121215]/50 p-5">
@@ -74,8 +98,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               <span className="font-medium text-[#e4e4e7] mt-0.5 block">Windows & macOS (Tauri 2)</span>
             </div>
             <div className="p-3 rounded-lg bg-[#16161b] border border-[#27272a]">
-              <span className="text-[#71717a] block text-[11px]">Stream Architecture</span>
-              <span className="font-medium text-[#e4e4e7] mt-0.5 block">Client-side WebRTC Pipeline</span>
+              <span className="text-[#71717a] block text-[11px]">Billing Engine</span>
+              <span className="font-medium text-[#e4e4e7] mt-0.5 block">USD Wallet ($0.04/s usage)</span>
             </div>
             <div className="p-3 rounded-lg bg-[#16161b] border border-[#27272a]">
               <span className="text-[#71717a] block text-[11px]">Security Protocol</span>
@@ -92,8 +116,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       <TopUpModal
         isOpen={isTopUpOpen}
         onClose={() => setIsTopUpOpen(false)}
-        onSuccess={(amount) => topUp(amount)}
+        onInitiatePayment={startTopUpPayment}
+        onVerifyPayment={checkPaymentVerification}
         exchangeRateUSDToNGN={exchangeRateUSDToNGN}
+        minimumTopUpUSD={minimumTopUpUSD}
       />
 
       <LiveSetupModal
