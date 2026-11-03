@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --background: #09090b;
+    --card: #121215;
+    --card-foreground: #fafafa;
+    --popover: #121215;
+    --popover-foreground: #fafafa;
+    --primary: #ef4444;
+    --primary-hover: #dc2626;
+    --primary-foreground: #ffffff;
+    --secondary: #1a1a1f;
+    --secondary-hover: #24242c;
+    --secondary-foreground: #e4e4e7;
+    --muted: #27272a;
+    --muted-foreground: #a1a1aa;
+    --border: #27272a;
+    --input: #1a1a1f;
+    --ring: #ef4444;
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  body {
+    background-color: var(--background);
+    color: #f4f4f5;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    user-select: none;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* Custom scrollbar for dark desktop app */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #09090b;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #27272a;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3f3f46;
+  }
+}
