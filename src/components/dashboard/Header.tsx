@@ -3,10 +3,13 @@ import { Video, LogOut, ShieldCheck, Activity } from 'lucide-react'
 
 interface HeaderProps {
   userEmail: string
+  displayName?: string
   onSignOut: () => void
 }
 
-export const Header: React.FC<HeaderProps> = ({ userEmail, onSignOut }) => {
+export const Header: React.FC<HeaderProps> = ({ userEmail, displayName, onSignOut }) => {
+  const initial = (displayName || userEmail).charAt(0).toUpperCase()
+
   return (
     <header className="h-16 border-b border-[#27272a] bg-[#0c0c0e]/80 backdrop-blur-md px-6 flex items-center justify-between sticky top-0 z-40">
       {/* Brand */}
@@ -36,13 +39,15 @@ export const Header: React.FC<HeaderProps> = ({ userEmail, onSignOut }) => {
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2.5">
           <div className="w-7 h-7 rounded-full bg-[#1a1a1f] border border-[#27272a] flex items-center justify-center text-[#a1a1aa] text-xs font-semibold">
-            {userEmail.charAt(0).toUpperCase()}
+            {initial}
           </div>
           <div className="hidden sm:block text-left">
-            <p className="text-xs font-medium text-[#f4f4f5] leading-none">{userEmail}</p>
+            <p className="text-xs font-medium text-[#f4f4f5] leading-none">
+              {displayName || userEmail}
+            </p>
             <p className="text-[10px] text-[#71717a] mt-0.5 flex items-center gap-1">
               <ShieldCheck className="w-2.5 h-2.5 text-emerald-400" />
-              Verified Operator
+              {displayName ? userEmail : 'Verified Operator'}
             </p>
           </div>
         </div>

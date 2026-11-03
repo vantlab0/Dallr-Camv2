@@ -2,9 +2,10 @@ import React, { useState } from 'react'
 import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
 import { Mail, Lock, AlertCircle } from 'lucide-react'
+import { useAuth } from '@/hooks/useAuth'
 
 interface SignInFormProps {
-  onSuccess: (email: string) => void
+  onSuccess?: (email: string) => void
   onSwitchToSignUp: () => void
 }
 
@@ -12,6 +13,7 @@ export const SignInForm: React.FC<SignInFormProps> = ({
   onSuccess,
   onSwitchToSignUp,
 }) => {
+  const { signIn } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [errors, setErrors] = useState<{ email?: string; password?: string; general?: string }>({})
@@ -19,40 +21,62 @@ export const SignInForm: React.FC<SignInFormProps> = ({
 
   const validate = () => {
     const errs: { email?: string; password?: string } = {}
-    if (!email) {
+    const trimmedEmail = email.trim()
+
+    if (!trimmedEmail) {
       errs.email = 'Email address is required'
-    } else if (!/\S+@\S+\.\S+/.test(email)) {
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
       errs.email = 'Please enter a valid email address'
     }
+
     if (!password) {
       errs.password = 'Password is required'
     } else if (password.length < 8) {
       errs.password = 'Password must be at least 8 characters'
     }
+
     setErrors(errs)
     return Object.keys(errs).length === 0
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!validate()) return
 
     setIsLoading(true)
-    // Simulate UI authentication check (Supabase auth will follow in later phase)
-    setTimeout(() => {
-      setIsLoading(false)
-      if (email === 'fail@error.com') {
-        setErrors({ general: 'Invalid credentials. Please verify your email and password.' })
-      } else {
-        onSuccess(email)
+    setErrors({})
+
+    try {
+      await signIn(email.trim(), password)
+      if (onSuccess) {
+        onSuccess(email.trim())
       }
-    }, 800)
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Invalid credentials. Please verify your email and password.'
+
+      // Friendly message for typical invalid credential response
+      const friendlyMessage =
+        message.toLowerCase().includes('invalid login credentials') ||
+        message.toLowerCase().includes('invalid credentials')
+          ? 'Invalid credentials. Please verify your email and password.'
+          : message
+
+      setErrors({ general: friendlyMessage })
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4" noValidate>
       {errors.general && (
-        <div className="flex items-center gap-2.5 p-3 rounded-lg bg-red-950/30 border border-red-900/50 text-xs text-red-300">
+        <div
+          role="alert"
+          className="flex items-center gap-2.5 p-3 rounded-lg bg-red-950/30 border border-red-900/50 text-xs text-red-300"
+        >
           <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
           <span>{errors.general}</span>
         </div>
