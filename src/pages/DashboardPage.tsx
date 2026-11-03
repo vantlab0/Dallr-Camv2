@@ -9,11 +9,13 @@ import { Layers, ShieldCheck, Zap } from 'lucide-react'
 
 interface DashboardPageProps {
   userEmail: string
+  displayName?: string
   onSignOut: () => void
 }
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({
   userEmail,
+  displayName,
   onSignOut,
 }) => {
   const { balanceUSD, exchangeRateUSDToNGN, isLoading, topUp, simulateRefresh } = useWallet()
@@ -21,7 +23,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   const [isLiveSetupOpen, setIsLiveSetupOpen] = useState(false)
 
   return (
-    <DashboardLayout userEmail={userEmail} onSignOut={onSignOut}>
+    <DashboardLayout
+      userEmail={userEmail}
+      displayName={displayName}
+      onSignOut={onSignOut}
+    >
       <div className="space-y-8">
         {/* Welcome Section */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -30,7 +36,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               Studio Dashboard
             </h1>
             <p className="text-xs text-[#a1a1aa] mt-1">
-              Manage your streaming wallet and initialize real-time live video calls.
+              Welcome back{displayName ? `, ${displayName}` : ''}. Manage your streaming wallet and initialize real-time live video calls.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -75,7 +81,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               <span className="text-[#71717a] block text-[11px]">Security Protocol</span>
               <span className="font-medium text-emerald-400 mt-0.5 flex items-center gap-1">
                 <ShieldCheck className="w-3.5 h-3.5" />
-                End-to-End Isolated
+                Row Level Security (Supabase)
               </span>
             </div>
           </div>
