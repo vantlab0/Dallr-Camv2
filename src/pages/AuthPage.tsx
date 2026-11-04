@@ -4,7 +4,7 @@ import { SignInForm } from '@/components/auth/SignInForm'
 import { SignUpForm } from '@/components/auth/SignUpForm'
 
 interface AuthPageProps {
-  onAuthenticated: (email: string) => void
+  onAuthenticated?: (email: string) => void
 }
 
 export const AuthPage: React.FC<AuthPageProps> = ({ onAuthenticated }) => {
