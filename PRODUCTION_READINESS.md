@@ -112,11 +112,37 @@ CREATE TABLE public.live_sessions (
 );
 ```
 
+### `reconciliation_logs` Table
+```sql
+CREATE TABLE public.reconciliation_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_name TEXT NOT NULL DEFAULT 'reconcile-stale-live-sessions',
+  started_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
+  completed_at TIMESTAMPTZ,
+  sessions_reconciled INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL CHECK (status IN ('running', 'success', 'failed')),
+  error_message TEXT,
+  duration_ms BIGINT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
+);
+```
+
 ### Stored Procedures
 - `start_live_session(p_user_id, p_decart_session_id)`: Validates wallet balance `>= 4` cents, initializes session record.
 - `heartbeat_and_meter_session(p_session_id, p_user_id, p_cumulative_seconds)`: Locks wallet and session rows `FOR UPDATE`, debits incremental seconds at 4 cents/sec, records `wallet_transactions` ledger entry, returns updated balance and `stop_requested`.
 - `end_live_session(p_session_id, p_user_id, p_final_seconds)`: Finalizes duration and status `completed`.
-- `reconcile_stale_sessions()`: Automatically closes sessions with no heartbeat in the last 45 seconds (handling client crashes or power outages).
+- `reconcile_stale_sessions()`: Automatically reconciles abandoned sessions that have ceased sending heartbeats (> 45s heartbeat lapse). Safe and idempotent: uses `FOR UPDATE SKIP LOCKED`, debits unbilled duration up to the heartbeat lease cap (15s) without exceeding wallet balance, transitions status to `abandoned`, sets `ended_at = last_heartbeat_at`, and logs execution telemetry into `reconciliation_logs`. Restricted strictly to `service_role`.
+
+### 4.1 Automatic Stale Session Reconciliation Scheduler
+- **Scheduler**: Supabase `pg_cron`
+- **Job Name**: `'reconcile-stale-live-sessions'`
+- **Schedule**: Every minute (`* * * * *`)
+- **Command**: `SELECT public.reconcile_stale_sessions();`
+- **Status Transition Policy**: Marks stale sessions as `abandoned` and freezes `ended_at` at `last_heartbeat_at`.
+- **Billing Boundary Protection**: Prevents indefinite billable accumulation by bounding unbilled duration to `15 seconds` (maximum heartbeat lease) and never overdrafting user wallets.
+- **Idempotency & Concurrency**: Subsequent runs do not duplicate charges or transactions. Concurrency is guarded via PostgreSQL row locks (`FOR UPDATE SKIP LOCKED`).
+- **Deployment Safety**: Migrations unschedule existing jobs before re-registering to guarantee zero duplicate cron jobs across deployments.
+- **Security & Auditability**: Execution is restricted to `service_role`. Outcomes (timestamp, duration, reconciled counts, status) are logged to `public.reconciliation_logs` without exposing credentials, secrets, or user tokens.
 
 ---
 

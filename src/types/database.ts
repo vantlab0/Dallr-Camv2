@@ -189,6 +189,42 @@ export interface Database {
         }
         Relationships: []
       }
+      reconciliation_logs: {
+        Row: {
+          id: string
+          job_name: string
+          started_at: string
+          completed_at: string | null
+          sessions_reconciled: number
+          status: 'running' | 'success' | 'failed'
+          error_message: string | null
+          duration_ms: number | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          job_name?: string
+          started_at?: string
+          completed_at?: string | null
+          sessions_reconciled?: number
+          status: 'running' | 'success' | 'failed'
+          error_message?: string | null
+          duration_ms?: number | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          job_name?: string
+          started_at?: string
+          completed_at?: string | null
+          sessions_reconciled?: number
+          status?: 'running' | 'success' | 'failed'
+          error_message?: string | null
+          duration_ms?: number | null
+          created_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
@@ -299,3 +335,4 @@ export type Wallet = Database['public']['Tables']['wallets']['Row']
 export type WalletTransaction = Database['public']['Tables']['wallet_transactions']['Row']
 export type PaymentRecord = Database['public']['Tables']['payment_records']['Row']
 export type LiveSession = Database['public']['Tables']['live_sessions']['Row']
+export type ReconciliationLog = Database['public']['Tables']['reconciliation_logs']['Row']
