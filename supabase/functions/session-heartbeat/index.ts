@@ -1,9 +1,10 @@
 // supabase/functions/session-heartbeat/index.ts
 // Authoritative backend usage metering endpoint.
 // 1. Authenticates caller via Supabase JWT.
-// 2. Enforces cumulative seconds billing arithmetic (rate: $0.04/s = 4 cents/s).
+// 2. Meters live session strictly using server timestamps and lease policy.
 // 3. Atomically debits wallet and updates live_sessions.
 // 4. Returns current balance and signals stopRequested when balance is exhausted.
+// 5. Ignores any client-supplied cumulative_seconds to prevent duration manipulation.
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
@@ -15,7 +16,6 @@ const corsHeaders = {
 
 interface HeartbeatPayload {
   session_id?: string
-  cumulative_seconds?: number
   decart_session_id?: string
   action?: 'start' | 'heartbeat'
 }
@@ -83,7 +83,7 @@ serve(async (req) => {
       )
     }
 
-    // 3. Periodic Heartbeat Metering
+    // 3. Periodic Heartbeat Metering (Server-Authoritative)
     const sessionId = body.session_id
     if (!sessionId) {
       return new Response(JSON.stringify({ error: 'session_id is required for heartbeat' }), {
@@ -92,12 +92,11 @@ serve(async (req) => {
       })
     }
 
-    const cumulativeSeconds = Math.max(0, Math.floor(body.cumulative_seconds || 0))
-
+    // Notice: Client cumulative_seconds is explicitly ignored.
+    // Elapsed billable duration is calculated solely by the server database clock.
     const { data: meterData, error: meterError } = await supabaseAdmin.rpc('heartbeat_and_meter_session', {
       p_session_id: sessionId,
       p_user_id: user.id,
-      p_cumulative_seconds: cumulativeSeconds,
     })
 
     if (meterError) {
