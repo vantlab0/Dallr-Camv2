@@ -3,18 +3,95 @@
 -- revokes dangerous client execution privileges on sensitive RPC functions,
 -- enforces caller checks, prevents concurrent live sessions, and adds timestamp bounding.
 
--- 1. Helper function to check if caller is service_role or matches user_id
-CREATE OR REPLACE FUNCTION public.check_is_service_or_owner(p_user_id UUID)
+-- Helper: Check if caller is genuinely service_role (backend worker / edge functions)
+-- or direct internal admin (e.g. postgres CLI/migrations when auth context is unset).
+-- Note: Inside SECURITY DEFINER functions, `current_user` evaluates to the function owner (e.g. 'postgres').
+-- Therefore, we NEVER use `current_user` alone to determine caller privileges!
+CREATE OR REPLACE FUNCTION public.check_is_service_role()
 RETURNS BOOLEAN AS $$
+DECLARE
+  v_role TEXT;
+  v_jwt_claims JSONB;
 BEGIN
-  -- If invoked via service_role or internal postgres admin, current_user will be service_role/postgres
-  -- auth.role() will be 'service_role' or null (in direct SQL)
-  IF current_user IN ('postgres', 'service_role') OR auth.role() = 'service_role' THEN
+  -- 1. Check Supabase auth.role() helper if available
+  BEGIN
+    v_role := auth.role();
+  EXCEPTION WHEN OTHERS THEN
+    v_role := NULL;
+  END;
+
+  IF v_role = 'service_role' THEN
     RETURN TRUE;
   END IF;
 
-  -- Otherwise, authenticated user must match p_user_id
-  IF auth.uid() IS NOT NULL AND auth.uid() = p_user_id THEN
+  -- 2. Check request.jwt.claim.role or request.jwt.claims session setting
+  BEGIN
+    v_role := current_setting('request.jwt.claim.role', true);
+  EXCEPTION WHEN OTHERS THEN
+    v_role := NULL;
+  END;
+
+  IF v_role = 'service_role' THEN
+    RETURN TRUE;
+  END IF;
+
+  BEGIN
+    v_jwt_claims := NULLIF(current_setting('request.jwt.claims', true), '')::jsonb;
+    IF v_jwt_claims ->> 'role' = 'service_role' THEN
+      RETURN TRUE;
+    END IF;
+  EXCEPTION WHEN OTHERS THEN
+    -- Ignore JSON parse errors
+  END;
+
+  -- 3. Check session_user (the physical connected DB role, NOT current_user which changes under SECURITY DEFINER)
+  IF session_user = 'service_role' THEN
+    RETURN TRUE;
+  END IF;
+
+  -- 4. If connected directly as superuser/postgres in direct SQL / migration script outside PostgREST
+  -- (where no request.jwt or auth context exists)
+  IF session_user = 'postgres' AND auth.role() IS NULL AND auth.uid() IS NULL THEN
+    RETURN TRUE;
+  END IF;
+
+  RETURN FALSE;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+REVOKE ALL ON FUNCTION public.check_is_service_role() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.check_is_service_role() TO authenticated, service_role;
+
+-- 1. Helper function to check if caller is service_role or authenticated owner of p_user_id
+CREATE OR REPLACE FUNCTION public.check_is_service_or_owner(p_user_id UUID)
+RETURNS BOOLEAN AS $$
+DECLARE
+  v_auth_uid UUID;
+  v_role TEXT;
+BEGIN
+  IF p_user_id IS NULL THEN
+    RETURN FALSE;
+  END IF;
+
+  -- If caller is service_role or internal DB administrator, allow
+  IF public.check_is_service_role() THEN
+    RETURN TRUE;
+  END IF;
+
+  -- Otherwise, caller must be an authenticated user matching p_user_id
+  BEGIN
+    v_role := auth.role();
+  EXCEPTION WHEN OTHERS THEN
+    v_role := NULL;
+  END;
+
+  BEGIN
+    v_auth_uid := auth.uid();
+  EXCEPTION WHEN OTHERS THEN
+    v_auth_uid := NULL;
+  END;
+
+  IF v_role = 'authenticated' AND v_auth_uid IS NOT NULL AND v_auth_uid = p_user_id THEN
     RETURN TRUE;
   END IF;
 
@@ -88,7 +165,7 @@ DECLARE
   v_tx_id UUID;
 BEGIN
   -- Strict caller verification: only service_role can directly credit
-  IF current_user NOT IN ('postgres', 'service_role') AND auth.role() <> 'service_role' THEN
+  IF NOT public.check_is_service_role() THEN
     RAISE EXCEPTION 'Access denied: credit_wallet can only be invoked by service_role';
   END IF;
 
@@ -168,7 +245,7 @@ DECLARE
   v_tx_id UUID;
 BEGIN
   -- Strict caller verification: only service_role can directly debit
-  IF current_user NOT IN ('postgres', 'service_role') AND auth.role() <> 'service_role' THEN
+  IF NOT public.check_is_service_role() THEN
     RAISE EXCEPTION 'Access denied: debit_wallet can only be invoked by service_role';
   END IF;
 
@@ -251,7 +328,7 @@ DECLARE
   v_tx_id UUID;
 BEGIN
   -- Strict caller verification: only service_role can verify/credit payments
-  IF current_user NOT IN ('postgres', 'service_role') AND auth.role() <> 'service_role' THEN
+  IF NOT public.check_is_service_role() THEN
     RAISE EXCEPTION 'Access denied: credit_verified_payment can only be invoked by service_role';
   END IF;
 
@@ -297,14 +374,14 @@ BEGIN
   WHERE id = v_record.id;
 
   -- Atomically credit user wallet
-  SELECT wallet_id, new_balance, transaction_id INTO v_wallet_id, v_new_balance, v_tx_id
+  SELECT cw.wallet_id, cw.new_balance, cw.transaction_id INTO v_wallet_id, v_new_balance, v_tx_id
   FROM public.credit_wallet(
     v_record.user_id,
     v_record.usd_credit_amount,
     'top_up',
     v_record.reference,
     'Paystack Top Up: $' || TRIM(TO_CHAR(v_record.usd_credit_amount / 100.0, '999999990.00'))
-  );
+  ) AS cw;
 
   RETURN QUERY SELECT TRUE, FALSE, v_record.usd_credit_amount, v_new_balance, 'Payment credited successfully';
 END;
@@ -314,7 +391,7 @@ REVOKE ALL ON FUNCTION public.credit_verified_payment(TEXT, TEXT, JSONB) FROM PU
 GRANT EXECUTE ON FUNCTION public.credit_verified_payment(TEXT, TEXT, JSONB) TO service_role;
 
 -- 8. Harden start_live_session
--- Prevents concurrent live sessions and enforces user ownership
+-- Prevents concurrent live sessions and enforces caller ownership
 CREATE OR REPLACE FUNCTION public.start_live_session(
   p_user_id UUID,
   p_decart_session_id TEXT DEFAULT NULL
@@ -647,13 +724,13 @@ BEGIN
   UPDATE public.live_sessions
   SET
     status = CASE
-      WHEN status = 'active' THEN 'completed'
-      ELSE status
+      WHEN live_sessions.status = 'active' THEN 'completed'
+      ELSE live_sessions.status
     END,
-    ended_at = COALESCE(ended_at, timezone('utc'::text, now())),
+    ended_at = COALESCE(live_sessions.ended_at, timezone('utc'::text, now())),
     last_heartbeat_at = timezone('utc'::text, now())
-  WHERE id = p_session_id
-  RETURNING id, status, duration_seconds, billed_amount INTO v_res.session_id, v_res.status, v_res.cumulative_seconds, v_res.billed_cents;
+  WHERE live_sessions.id = p_session_id
+  RETURNING live_sessions.id, live_sessions.status, live_sessions.duration_seconds, live_sessions.billed_amount INTO v_res.session_id, v_res.status, v_res.cumulative_seconds, v_res.billed_cents;
 
   RETURN QUERY SELECT
     v_res.session_id,
@@ -674,7 +751,7 @@ RETURNS INTEGER AS $$
 DECLARE
   v_count INTEGER;
 BEGIN
-  IF current_user NOT IN ('postgres', 'service_role') AND auth.role() <> 'service_role' THEN
+  IF NOT public.check_is_service_role() THEN
     RAISE EXCEPTION 'Access denied: reconcile_stale_sessions can only be invoked by service_role';
   END IF;
 
