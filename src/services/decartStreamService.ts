@@ -35,6 +35,7 @@ export class DecartStreamService {
   private currentState: LiveStreamConnectionState = 'idle'
   private currentSession: LiveStreamSessionInfo | null = null
   private listeners: DecartStreamServiceListeners = {}
+  private isStartingStream: boolean = false
 
   private ratePerSecondUSD: number = 0.04
   private lastPrompt: string = ''
@@ -136,10 +137,16 @@ export class DecartStreamService {
   public async startLiveStream(options: ConnectStreamOptions): Promise<LiveStreamSessionInfo> {
     const { referenceImage, prompt, ratePerSecondUSD = 0.04, mirror = 'auto', speed } = options
 
-    if (this.currentState === 'connected' || this.currentState === 'connecting') {
+    if (
+      this.isStartingStream ||
+      this.currentState === 'connected' ||
+      this.currentState === 'connecting' ||
+      this.currentState === 'preparing'
+    ) {
       throw new Error('Live stream session is already active or connecting.')
     }
 
+    this.isStartingStream = true
     this.ratePerSecondUSD = ratePerSecondUSD
     this.lastPrompt = prompt
     this.lastImageRef = referenceImage
@@ -181,8 +188,11 @@ export class DecartStreamService {
       realtimeClient.on('connectionChange', (state) => {
         if (state === 'connected' || state === 'generating') {
           this.updateState('connected')
-          // Authoritatively start billing when confirmed active and ready
-          void sessionBillingService.startSession(realtimeClient.sessionId || undefined)
+          // Authoritatively start billing only if not already active or starting
+          const billingState = sessionBillingService.getState()
+          if (!billingState.isActive && !billingState.isStarting) {
+            void sessionBillingService.startSession(realtimeClient.sessionId || undefined)
+          }
         } else if (state === 'reconnecting') {
           this.updateState('reconnecting')
         } else if (state === 'connecting') {
@@ -238,10 +248,13 @@ export class DecartStreamService {
       return sessionInfo
     } catch (err: unknown) {
       this.updateState('failed')
+      void sessionBillingService.endSession()
       const msg = err instanceof Error ? err.message : 'Failed to connect to Decart Lucy 2.5'
       this.listeners.onError?.({ code: 'CONNECT_FAILED', message: msg })
       this.cleanupMedia()
       throw err
+    } finally {
+      this.isStartingStream = false
     }
   }
 
