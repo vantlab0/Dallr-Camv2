@@ -2,10 +2,21 @@ import { AuthProvider } from './contexts/AuthContext'
 import { useAuth } from './hooks/useAuth'
 import { AuthPage } from './pages/AuthPage'
 import { DashboardPage } from './pages/DashboardPage'
+import { VideoOutputPage } from './pages/VideoOutputPage'
 import { Video } from 'lucide-react'
+
+function isVideoOutputWindow(): boolean {
+  if (typeof window === 'undefined') return false
+  const params = new URLSearchParams(window.location.search)
+  return params.get('view') === 'video-output' || window.location.hash === '#video-output'
+}
 
 function AppContent() {
   const { user, profile, isAuthenticated, isLoading, signOut } = useAuth()
+
+  if (isVideoOutputWindow()) {
+    return <VideoOutputPage />
+  }
 
   if (isLoading) {
     return (
@@ -37,6 +48,14 @@ function AppContent() {
 }
 
 export function App() {
+  if (isVideoOutputWindow()) {
+    return (
+      <div className="fixed inset-0 bg-black text-[#f4f4f5] m-0 p-0 overflow-hidden">
+        <VideoOutputPage />
+      </div>
+    )
+  }
+
   return (
     <AuthProvider>
       <div className="min-h-screen bg-[#09090b] text-[#f4f4f5]">

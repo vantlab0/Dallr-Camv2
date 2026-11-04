@@ -23,6 +23,8 @@ import { useLiveSession } from '@/hooks/useLiveSession'
 import { promptManager, DEFAULT_TRANSFORMATION_PROMPT } from '@/config/prompts'
 import { LiveStreamView } from '@/components/live/LiveStreamView'
 import { decartStreamService } from '@/services/decartStreamService'
+import { streamRelayService } from '@/services/streamRelayService'
+import { videoWindowManager } from '@/services/videoWindowManager'
 import type {
   PreparedImageReference,
   LiveStreamSessionInfo,
@@ -89,6 +91,7 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
       },
       onRemoteStream: (stream) => {
         setRemoteStream(stream)
+        streamRelayService.startBroadcasting(stream)
       },
       onLocalStream: (stream) => {
         setLocalStream(stream)
@@ -171,6 +174,23 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
     await prepareLiveSession(preparedImage, prompt)
   }
 
+  const handleEndLiveStream = useCallback(async () => {
+    try {
+      streamRelayService.notifySessionEnded()
+      await videoWindowManager.closeVideoWindow()
+      await decartStreamService.endLiveStream()
+    } finally {
+      setIsStreaming(false)
+      setStreamSessionInfo(null)
+      setRemoteStream(null)
+      setLocalStream(null)
+      setElapsedSeconds(0)
+      setUsageUSD(0)
+      resetSession()
+      onClose()
+    }
+  }, [resetSession, onClose])
+
   // Start real-time stream via decartStreamService
   const handleLaunchEngine = useCallback(async () => {
     if (!preparedImage) return
@@ -184,26 +204,24 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
         ratePerSecondUSD: rate,
       })
       setStreamSessionInfo(session)
+
+      // Open borderless native video window
+      await videoWindowManager.openVideoWindow({
+        onClose: () => {
+          void handleEndLiveStream()
+        },
+      })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to connect to Decart Lucy 2.5 stream.'
       setStreamError(msg)
     }
-  }, [preparedImage, prompt, preparedSession])
+  }, [preparedImage, prompt, preparedSession, handleEndLiveStream])
 
-  const handleEndLiveStream = useCallback(async () => {
-    try {
-      await decartStreamService.endLiveStream()
-    } finally {
-      setIsStreaming(false)
-      setStreamSessionInfo(null)
-      setRemoteStream(null)
-      setLocalStream(null)
-      setElapsedSeconds(0)
-      setUsageUSD(0)
-      resetSession()
-      onClose()
-    }
-  }, [resetSession, onClose])
+  useEffect(() => {
+    streamRelayService.onRequestEndSession(() => {
+      void handleEndLiveStream()
+    })
+  }, [handleEndLiveStream])
 
   const handleUpdatePrompt = useCallback(async (newPrompt: string) => {
     await decartStreamService.updatePrompt(newPrompt)
