@@ -27,6 +27,9 @@ interface LiveStreamViewProps {
   elapsedSeconds?: number
   usageUSD?: number
   metrics?: LiveStreamMetrics | null
+  lowBalanceWarning?: boolean
+  criticalBalanceWarning?: boolean
+  insufficientFundsNotice?: { seconds: number; billedUSD: number } | null
   onUpdatePrompt: (prompt: string) => Promise<void>
   onEndStream: () => Promise<void>
   onDismissError?: () => void
@@ -41,6 +44,9 @@ export const LiveStreamView: React.FC<LiveStreamViewProps> = ({
   elapsedSeconds = 0,
   usageUSD = 0,
   metrics,
+  lowBalanceWarning,
+  criticalBalanceWarning,
+  insufficientFundsNotice,
   onUpdatePrompt,
   onEndStream,
   onDismissError,
@@ -247,7 +253,38 @@ export const LiveStreamView: React.FC<LiveStreamViewProps> = ({
           </div>
         </div>
 
-        {/* Error Banner */}
+        {/* Balance Warnings and Error Banners */}
+        {insufficientFundsNotice && (
+          <div className="absolute top-4 left-4 right-4 z-40 max-w-lg mx-auto bg-red-950/95 border-2 border-red-500 rounded-xl p-4 shadow-2xl backdrop-blur-md flex items-start gap-3 text-xs text-red-100 animate-bounce">
+            <ShieldAlert className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+            <div className="flex-1 space-y-1">
+              <span className="font-bold text-red-100 uppercase tracking-wide">Stream Terminated — Balance Exhausted</span>
+              <p className="leading-relaxed">
+                Your USD wallet balance has been exhausted. Final billable duration: {insufficientFundsNotice.seconds}s (${insufficientFundsNotice.billedUSD.toFixed(2)} USD).
+              </p>
+            </div>
+          </div>
+        )}
+
+        {criticalBalanceWarning && !insufficientFundsNotice && (
+          <div className="absolute top-4 left-4 right-4 z-30 max-w-md mx-auto bg-amber-950/90 border border-amber-500/80 rounded-xl p-3 shadow-xl backdrop-blur-md flex items-start gap-2.5 text-xs text-amber-200 animate-pulse">
+            <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <span className="font-semibold text-amber-100 block">Critical Balance Warning</span>
+              <span>Less than 10 seconds of streaming remaining ($0.40 USD). Top up immediately to avoid cutoff.</span>
+            </div>
+          </div>
+        )}
+
+        {lowBalanceWarning && !criticalBalanceWarning && !insufficientFundsNotice && (
+          <div className="absolute top-4 left-4 right-4 z-30 max-w-md mx-auto bg-[#1c1917]/90 border border-amber-700/60 rounded-xl p-2.5 shadow-xl backdrop-blur-md flex items-start gap-2.5 text-xs text-amber-300">
+            <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <span>Low balance alert: Under 30 seconds of stream balance remaining.</span>
+            </div>
+          </div>
+        )}
+
         {error && (
           <div className="absolute top-4 left-4 right-4 z-30 max-w-lg mx-auto bg-red-950/90 border border-red-500/50 rounded-xl p-3.5 shadow-2xl backdrop-blur-md flex items-start gap-3 text-xs text-red-200">
             <ShieldAlert className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />

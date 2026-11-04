@@ -25,6 +25,7 @@ import { LiveStreamView } from '@/components/live/LiveStreamView'
 import { decartStreamService } from '@/services/decartStreamService'
 import { streamRelayService } from '@/services/streamRelayService'
 import { videoWindowManager } from '@/services/videoWindowManager'
+import { sessionBillingService } from '@/services/sessionBillingService'
 import type {
   PreparedImageReference,
   LiveStreamSessionInfo,
@@ -64,6 +65,12 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0)
   const [usageUSD, setUsageUSD] = useState<number>(0)
   const [metrics, setMetrics] = useState<LiveStreamMetrics | null>(null)
+  const [lowBalanceWarning, setLowBalanceWarning] = useState<boolean>(false)
+  const [criticalBalanceWarning, setCriticalBalanceWarning] = useState<boolean>(false)
+  const [insufficientFundsNotice, setInsufficientFundsNotice] = useState<{
+    seconds: number
+    billedUSD: number
+  } | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -105,6 +112,17 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
       },
       onStats: (stats: LiveStreamMetrics) => {
         setMetrics(stats)
+      },
+      onInsufficientFunds: (data) => {
+        setInsufficientFundsNotice(data)
+      },
+    })
+
+    sessionBillingService.setListeners({
+      onLowBalanceWarning: () => setLowBalanceWarning(true),
+      onCriticalBalanceWarning: () => setCriticalBalanceWarning(true),
+      onInsufficientFundsTerminated: (seconds, billedUSD) => {
+        setInsufficientFundsNotice({ seconds, billedUSD })
       },
     })
   }, [])
@@ -268,6 +286,9 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
             elapsedSeconds={elapsedSeconds}
             usageUSD={usageUSD}
             metrics={metrics}
+            lowBalanceWarning={lowBalanceWarning}
+            criticalBalanceWarning={criticalBalanceWarning}
+            insufficientFundsNotice={insufficientFundsNotice}
             onUpdatePrompt={handleUpdatePrompt}
             onEndStream={handleEndLiveStream}
             onDismissError={() => setStreamError(null)}

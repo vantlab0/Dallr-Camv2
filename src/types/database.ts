@@ -147,11 +147,97 @@ export interface Database {
         }
         Relationships: []
       }
+      live_sessions: {
+        Row: {
+          id: string
+          user_id: string
+          decart_session_id: string | null
+          started_at: string
+          ended_at: string | null
+          duration_seconds: number
+          billed_amount: number // cents
+          status: 'active' | 'completed' | 'terminated_insufficient_funds' | 'abandoned' | 'failed'
+          last_heartbeat_at: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          decart_session_id?: string | null
+          started_at?: string
+          ended_at?: string | null
+          duration_seconds?: number
+          billed_amount?: number
+          status?: 'active' | 'completed' | 'terminated_insufficient_funds' | 'abandoned' | 'failed'
+          last_heartbeat_at?: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          decart_session_id?: string | null
+          started_at?: string
+          ended_at?: string | null
+          duration_seconds?: number
+          billed_amount?: number
+          status?: 'active' | 'completed' | 'terminated_insufficient_funds' | 'abandoned' | 'failed'
+          last_heartbeat_at?: string
+          created_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
+      start_live_session: {
+        Args: {
+          p_user_id: string
+          p_decart_session_id?: string
+        }
+        Returns: {
+          session_id: string
+          user_id: string
+          status: string
+          started_at: string
+          current_balance: number
+        }[]
+      }
+      heartbeat_and_meter_session: {
+        Args: {
+          p_session_id: string
+          p_user_id: string
+          p_cumulative_seconds: number
+        }
+        Returns: {
+          session_id: string
+          status: string
+          cumulative_seconds: number
+          billed_cents: number
+          new_balance: number
+          stop_requested: boolean
+          reason: string
+        }[]
+      }
+      end_live_session: {
+        Args: {
+          p_session_id: string
+          p_user_id: string
+          p_final_seconds: number
+        }
+        Returns: {
+          session_id: string
+          status: string
+          total_seconds: number
+          total_billed_cents: number
+          final_balance: number
+        }[]
+      }
+      reconcile_stale_sessions: {
+        Args: Record<string, never>
+        Returns: number
+      }
       credit_wallet: {
         Args: {
           p_user_id: string
@@ -211,3 +297,4 @@ export type ProfileUpdate = Database['public']['Tables']['profiles']['Update']
 export type Wallet = Database['public']['Tables']['wallets']['Row']
 export type WalletTransaction = Database['public']['Tables']['wallet_transactions']['Row']
 export type PaymentRecord = Database['public']['Tables']['payment_records']['Row']
+export type LiveSession = Database['public']['Tables']['live_sessions']['Row']
