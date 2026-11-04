@@ -89,4 +89,64 @@ describe('StreamRelayService', () => {
       receiverService.startReceiving()
     }).not.toThrow()
   })
+
+  it('buffers ICE candidates received before remoteDescription is set and drains them after', async () => {
+    const addIceCandidateSpy = vi.fn().mockResolvedValue(undefined)
+    let remoteDescription: RTCSessionDescription | null = null
+
+    class FakeRTCPeerConnection {
+      public ontrack: any = null
+      public onicecandidate: any = null
+      public addIceCandidate = addIceCandidateSpy
+      public close = vi.fn()
+
+      get remoteDescription() {
+        return remoteDescription
+      }
+
+      async setRemoteDescription(desc: any) {
+        remoteDescription = desc
+      }
+
+      async createAnswer() {
+        return { type: 'answer', sdp: 'fake-answer-sdp' }
+      }
+
+      async setLocalDescription() {}
+    }
+
+    vi.stubGlobal('RTCPeerConnection', FakeRTCPeerConnection)
+    vi.stubGlobal('RTCSessionDescription', class {
+      constructor(public init: any) {}
+    })
+    vi.stubGlobal('RTCIceCandidate', class {
+      constructor(public init: any) {}
+    })
+
+    const testReceiver = new StreamRelayService()
+    testReceiver.startReceiving()
+
+    // Simulate early ICE candidate message arriving before offer/remoteDescription
+    const fakeCandidate = { candidate: 'candidate:1 1 UDP 12345 127.0.0.1 5000 typ host', sdpMid: '0' }
+    await (testReceiver as any).handleIncomingMessage({
+      type: 'relay-ice-candidate',
+      candidate: fakeCandidate,
+    })
+
+    // Candidate should NOT be added yet because remoteDescription is null
+    expect(addIceCandidateSpy).not.toHaveBeenCalled()
+    expect((testReceiver as any).pendingIceCandidates).toHaveLength(1)
+
+    // Now offer arrives and setRemoteDescription is invoked
+    await (testReceiver as any).handleIncomingMessage({
+      type: 'relay-offer',
+      sdp: { type: 'offer', sdp: 'fake-offer-sdp' },
+    })
+
+    // Now buffered candidate should be drained and added
+    expect(addIceCandidateSpy).toHaveBeenCalledTimes(1)
+    expect((testReceiver as any).pendingIceCandidates).toHaveLength(0)
+
+    testReceiver.destroy()
+  })
 })

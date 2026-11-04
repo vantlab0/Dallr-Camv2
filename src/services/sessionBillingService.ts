@@ -199,6 +199,7 @@ export class SessionBillingService {
         const errorMsg = err instanceof Error ? err.message : 'Error starting billing'
         this.error = errorMsg
         this.emitState()
+        this.listeners.onError?.(errorMsg)
         throw err
       } finally {
         this.inFlightStartPromise = null
@@ -310,6 +311,9 @@ export class SessionBillingService {
       this.cumulativeSeconds,
       Number((this.billedCents / 100).toFixed(2))
     )
+    if (reason !== 'Balance exhausted') {
+      this.listeners.onError?.(reason)
+    }
   }
 
   /**
