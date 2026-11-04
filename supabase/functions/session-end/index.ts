@@ -2,7 +2,8 @@
 // Secure backend session termination and final usage reconciliation endpoint.
 // 1. Authenticates user JWT.
 // 2. Finalizes live_sessions row status to 'completed' and sets ended_at.
-// 3. Atomically debits any final unmetered cumulative seconds.
+// 3. Atomically debits any final server-authoritative unbilled elapsed time.
+// 4. Client-supplied seconds are ignored; database calculates billing from server clock.
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
@@ -14,7 +15,6 @@ const corsHeaders = {
 
 interface EndSessionPayload {
   session_id: string
-  final_seconds?: number
 }
 
 serve(async (req) => {
@@ -59,13 +59,10 @@ serve(async (req) => {
       })
     }
 
-    const finalSeconds = Math.max(0, Math.floor(body.final_seconds || 0))
-
-    // 2. Invoke end_live_session procedure
+    // 2. Invoke server-authoritative end_live_session procedure
     const { data, error } = await supabaseAdmin.rpc('end_live_session', {
       p_session_id: sessionId,
       p_user_id: user.id,
-      p_final_seconds: finalSeconds,
     })
 
     if (error) {

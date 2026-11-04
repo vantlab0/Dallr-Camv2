@@ -196,7 +196,7 @@ describe('sessionBillingService', () => {
     expect(sessionBillingService.getState().isActive).toBe(false)
   })
 
-  it('ends session and reconciles final cumulative seconds with backend', async () => {
+  it('ends session and reconciles final cumulative seconds with backend without sending client seconds', async () => {
     vi.mocked(supabase.auth.getSession).mockResolvedValue({
       data: { session: { access_token: 'token' } as any },
       error: null,
@@ -231,6 +231,11 @@ describe('sessionBillingService', () => {
     expect(finalResult.totalSeconds).toBe(120)
     expect(finalResult.totalBilledUSD).toBe(4.8)
     expect(finalResult.finalBalanceUSD).toBe(10.2)
+
+    expect(supabase.functions.invoke).toHaveBeenCalledWith('session-end', {
+      headers: { Authorization: 'Bearer token' },
+      body: { session_id: 'session-final' },
+    })
 
     expect(sessionBillingService.getState().isActive).toBe(false)
     expect(sessionBillingService.getState().sessionId).toBeNull()

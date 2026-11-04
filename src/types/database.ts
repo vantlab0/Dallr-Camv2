@@ -158,6 +158,7 @@ export interface Database {
           billed_amount: number // cents
           status: 'active' | 'completed' | 'terminated_insufficient_funds' | 'abandoned' | 'failed'
           last_heartbeat_at: string
+          last_billed_at: string
           created_at: string
         }
         Insert: {
@@ -170,6 +171,7 @@ export interface Database {
           billed_amount?: number
           status?: 'active' | 'completed' | 'terminated_insufficient_funds' | 'abandoned' | 'failed'
           last_heartbeat_at?: string
+          last_billed_at?: string
           created_at?: string
         }
         Update: {
@@ -182,6 +184,7 @@ export interface Database {
           billed_amount?: number
           status?: 'active' | 'completed' | 'terminated_insufficient_funds' | 'abandoned' | 'failed'
           last_heartbeat_at?: string
+          last_billed_at?: string
           created_at?: string
         }
         Relationships: []
@@ -208,7 +211,6 @@ export interface Database {
         Args: {
           p_session_id: string
           p_user_id: string
-          p_cumulative_seconds: number
         }
         Returns: {
           session_id: string
@@ -224,7 +226,6 @@ export interface Database {
         Args: {
           p_session_id: string
           p_user_id: string
-          p_final_seconds: number
         }
         Returns: {
           session_id: string

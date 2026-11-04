@@ -222,7 +222,6 @@ export class SessionBillingService {
         body: {
           action: 'heartbeat',
           session_id: this.sessionId,
-          cumulative_seconds: this.cumulativeSeconds,
         },
       })
 
@@ -239,6 +238,9 @@ export class SessionBillingService {
         this.consecutiveHeartbeatFailures = 0
         this.billedCents = data.billed_cents ?? this.billedCents
         this.currentBalanceCents = data.new_balance_cents ?? this.currentBalanceCents
+        if (typeof data.cumulative_seconds === 'number' && data.cumulative_seconds > this.cumulativeSeconds) {
+          this.cumulativeSeconds = data.cumulative_seconds
+        }
 
         this.checkBalanceThresholds(this.currentBalanceCents)
 
@@ -293,7 +295,7 @@ export class SessionBillingService {
   /**
    * Finalizes the active session on the backend.
    */
-  public async endSession(finalSeconds?: number): Promise<{
+  public async endSession(_finalSeconds?: number): Promise<{
     totalSeconds: number
     totalBilledUSD: number
     finalBalanceUSD: number
@@ -301,16 +303,12 @@ export class SessionBillingService {
     this.stopHeartbeatLoop()
 
     const activeSessionId = this.sessionId
-    const secondsToReport = finalSeconds !== undefined
-      ? Math.max(this.cumulativeSeconds, Math.floor(finalSeconds))
-      : this.cumulativeSeconds
-
     this.isActive = false
 
     if (!activeSessionId) {
       return {
-        totalSeconds: secondsToReport,
-        totalBilledUSD: Number(((secondsToReport * this.RATE_CENTS_PER_SECOND) / 100).toFixed(2)),
+        totalSeconds: this.cumulativeSeconds,
+        totalBilledUSD: Number(((this.cumulativeSeconds * this.RATE_CENTS_PER_SECOND) / 100).toFixed(2)),
         finalBalanceUSD: Number((this.currentBalanceCents / 100).toFixed(2)),
       }
     }
@@ -328,15 +326,14 @@ export class SessionBillingService {
           },
           body: {
             session_id: activeSessionId,
-            final_seconds: secondsToReport,
           },
         })
 
         const data = invokeRes?.data
         if (data?.success) {
-          this.billedCents = data.total_billed_cents
-          this.currentBalanceCents = data.final_balance_cents
-          this.cumulativeSeconds = data.total_seconds
+          this.billedCents = data.total_billed_cents ?? this.billedCents
+          this.currentBalanceCents = data.final_balance_cents ?? this.currentBalanceCents
+          this.cumulativeSeconds = data.total_seconds ?? this.cumulativeSeconds
         }
       }
     } catch (err) {

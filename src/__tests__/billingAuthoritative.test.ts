@@ -14,7 +14,8 @@ vi.mock('@/lib/supabase', () => ({
 }))
 
 describe('Authoritative Session Billing & Failure Teardown', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await sessionBillingService.endSession()
     vi.clearAllMocks()
     vi.useFakeTimers()
     sessionBillingService.removeListeners()
@@ -53,7 +54,7 @@ describe('Authoritative Session Billing & Failure Teardown', () => {
     await sessionBillingService.startSession()
     expect(sessionBillingService.getState().isActive).toBe(true)
 
-    // Tick 10 seconds
+    // Tick 10 seconds locally
     sessionBillingService.onGenerationTick(10)
     expect(sessionBillingService.getState().cumulativeSeconds).toBe(10)
 
@@ -136,5 +137,57 @@ describe('Authoritative Session Billing & Failure Teardown', () => {
 
     await sessionBillingService.sendHeartbeat()
     expect(critWarning).toBe(true)
+  })
+
+  it('ensures client heartbeat sends session_id without client-supplied seconds', async () => {
+    vi.mocked(supabase.auth.getSession).mockResolvedValue({
+      data: {
+        session: {
+          access_token: 'valid-jwt-token',
+          user: { id: 'test-user-uuid' },
+        } as any,
+      },
+      error: null,
+    })
+
+    vi.mocked(supabase.functions.invoke).mockResolvedValueOnce({
+      data: {
+        success: true,
+        session_id: 'session-authoritative-1',
+        status: 'active',
+        current_balance_cents: 2000,
+      },
+      error: null,
+    })
+
+    await sessionBillingService.startSession()
+
+    vi.mocked(supabase.functions.invoke).mockResolvedValueOnce({
+      data: {
+        success: true,
+        session_id: 'session-authoritative-1',
+        status: 'active',
+        cumulative_seconds: 5,
+        billed_cents: 20,
+        new_balance_cents: 1980,
+        stop_requested: false,
+      },
+      error: null,
+    })
+
+    await sessionBillingService.sendHeartbeat()
+
+    // Assert that invocation payload did NOT include cumulative_seconds
+    expect(supabase.functions.invoke).toHaveBeenLastCalledWith('session-heartbeat', {
+      headers: { Authorization: 'Bearer valid-jwt-token' },
+      body: {
+        action: 'heartbeat',
+        session_id: 'session-authoritative-1',
+      },
+    })
+
+    expect(sessionBillingService.getState().cumulativeSeconds).toBe(5)
+    expect(sessionBillingService.getState().billedCents).toBe(20)
+    expect(sessionBillingService.getState().currentBalanceCents).toBe(1980)
   })
 })
