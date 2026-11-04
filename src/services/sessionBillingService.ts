@@ -45,6 +45,9 @@ export class SessionBillingService {
   private decartSessionId: string | null = null
   private isActive: boolean = false
   private isStarting: boolean = false
+  private inFlightStartPromise: Promise<{ sessionId: string; currentBalanceCents: number }> | null = null
+  private startupCancelled: boolean = false
+
   private cumulativeSeconds: number = 0
   private billedCents: number = 0
   private currentBalanceCents: number = 0
@@ -99,15 +102,23 @@ export class SessionBillingService {
   /**
    * Starts a new authoritative live session on the backend.
    * Invoked once Decart connection is confirmed.
+   * Idempotent and thread-safe against concurrent startup attempts.
    */
-  public async startSession(decartSessionId?: string): Promise<{ sessionId: string; currentBalanceCents: number }> {
-    if (this.isActive) {
-      return {
-        sessionId: this.sessionId!,
+  public startSession(decartSessionId?: string): Promise<{ sessionId: string; currentBalanceCents: number }> {
+    // 1. If already active, return current session idempotently
+    if (this.isActive && this.sessionId) {
+      return Promise.resolve({
+        sessionId: this.sessionId,
         currentBalanceCents: this.currentBalanceCents,
-      }
+      })
     }
 
+    // 2. If already starting, reuse the existing in-flight promise to prevent duplicates
+    if (this.isStarting && this.inFlightStartPromise) {
+      return this.inFlightStartPromise
+    }
+
+    this.startupCancelled = false
     this.isStarting = true
     this.error = null
     this.cumulativeSeconds = 0
@@ -119,54 +130,84 @@ export class SessionBillingService {
     this.decartSessionId = decartSessionId || null
     this.emitState()
 
-    try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
+    const startPromise = (async () => {
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession()
 
-      const token = session?.access_token
-      if (!token) {
-        throw new Error('Authentication required to start billing session.')
+        const token = session?.access_token
+        if (!token) {
+          throw new Error('Authentication required to start billing session.')
+        }
+
+        const { data, error } = await supabase.functions.invoke('session-heartbeat', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          body: {
+            action: 'start',
+            decart_session_id: decartSessionId,
+          },
+        })
+
+        if (error || !data?.success) {
+          const msg = data?.error || error?.message || 'Failed to start billing session'
+          throw new Error(msg)
+        }
+
+        // If the session was cancelled or ended while this asynchronous request was in-flight,
+        // immediately close the newly created session on the backend and do not activate locally.
+        if (this.startupCancelled) {
+          const orphanedSessionId = data.session_id
+          if (orphanedSessionId && token) {
+            try {
+              const invokeEnd = supabase.functions.invoke('session-end', {
+                headers: { Authorization: `Bearer ${token}` },
+                body: { session_id: orphanedSessionId, final_seconds: 0 },
+              })
+              if (invokeEnd && typeof invokeEnd.catch === 'function') {
+                invokeEnd.catch((err) => {
+                  console.warn('Failed to end cancelled startup session:', err)
+                })
+              }
+            } catch (err) {
+              console.warn('Failed to invoke session-end for cancelled startup:', err)
+            }
+          }
+          throw new Error('Live session startup was cancelled.')
+        }
+
+        this.sessionId = data.session_id
+        this.currentBalanceCents = data.current_balance_cents
+        this.isActive = true
+        this.isStarting = false
+
+        this.checkBalanceThresholds(this.currentBalanceCents)
+        this.emitState()
+
+        // Start periodic heartbeat timer
+        this.startHeartbeatLoop()
+
+        return {
+          sessionId: this.sessionId!,
+          currentBalanceCents: this.currentBalanceCents,
+        }
+      } catch (err) {
+        this.isStarting = false
+        this.isActive = false
+        const errorMsg = err instanceof Error ? err.message : 'Error starting billing'
+        this.error = errorMsg
+        this.emitState()
+        throw err
+      } finally {
+        this.inFlightStartPromise = null
+        this.isStarting = false
       }
+    })()
 
-      const { data, error } = await supabase.functions.invoke('session-heartbeat', {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        body: {
-          action: 'start',
-          decart_session_id: decartSessionId,
-        },
-      })
-
-      if (error || !data?.success) {
-        const msg = data?.error || error?.message || 'Failed to start billing session'
-        throw new Error(msg)
-      }
-
-      this.sessionId = data.session_id
-      this.currentBalanceCents = data.current_balance_cents
-      this.isActive = true
-      this.isStarting = false
-
-      this.checkBalanceThresholds(this.currentBalanceCents)
-      this.emitState()
-
-      // Start periodic heartbeat timer
-      this.startHeartbeatLoop()
-
-      return {
-        sessionId: this.sessionId!,
-        currentBalanceCents: this.currentBalanceCents,
-      }
-    } catch (err) {
-      this.isStarting = false
-      this.isActive = false
-      const errorMsg = err instanceof Error ? err.message : 'Error starting billing'
-      this.error = errorMsg
-      this.emitState()
-      throw err
-    }
+    this.inFlightStartPromise = startPromise
+    return startPromise
   }
 
   /**
@@ -298,6 +339,11 @@ export class SessionBillingService {
     totalBilledUSD: number
     finalBalanceUSD: number
   }> {
+    // Mark any in-flight startup as cancelled
+    if (this.isStarting) {
+      this.startupCancelled = true
+    }
+
     this.stopHeartbeatLoop()
 
     const activeSessionId = this.sessionId
@@ -306,6 +352,7 @@ export class SessionBillingService {
       : this.cumulativeSeconds
 
     this.isActive = false
+    this.isStarting = false
 
     if (!activeSessionId) {
       return {

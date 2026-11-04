@@ -53,6 +53,8 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
   const [prompt, setPrompt] = useState<string>(() => promptManager.getActivePrompt())
   const [isPromptExpanded, setIsPromptExpanded] = useState<boolean>(false)
   const [imageError, setImageError] = useState<string | null>(null)
+  const [isStartingLive, setIsStartingLive] = useState<boolean>(false)
+  const isStartingLiveRef = useRef<boolean>(false)
 
   // Real-time Decart live stream state
   const [isStreaming, setIsStreaming] = useState<boolean>(false)
@@ -186,6 +188,8 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
       await decartStreamService.endLiveStream()
     } finally {
       setIsStreaming(false)
+      setIsStartingLive(false)
+      isStartingLiveRef.current = false
       setStreamSessionInfo(null)
       setRemoteStream(null)
       setLocalStream(null)
@@ -198,18 +202,30 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
 
   // Direct Go Live connection: prepares session and connects directly to Decart Lucy 2.5
   const handleGoLive = async () => {
+    if (isStartingLiveRef.current || isStartingLive || isSessionLoading) {
+      return
+    }
+
     if (!preparedImage) {
       setImageError('Please select a reference image before starting the live video call.')
       return
     }
 
+    isStartingLiveRef.current = true
+    setIsStartingLive(true)
     promptManager.setActivePrompt(prompt)
-    const prep = await prepareLiveSession(preparedImage, prompt)
-    if (!prep) return
 
-    setIsStreaming(true)
-    setStreamError(null)
     try {
+      const prep = await prepareLiveSession(preparedImage, prompt)
+      if (!prep) {
+        setIsStartingLive(false)
+        isStartingLiveRef.current = false
+        return
+      }
+
+      setIsStreaming(true)
+      setStreamError(null)
+
       const session = await decartStreamService.startLiveStream({
         referenceImage: preparedImage,
         prompt,
@@ -226,6 +242,9 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to connect to Decart Lucy 2.5 stream.'
       setStreamError(msg)
+    } finally {
+      setIsStartingLive(false)
+      isStartingLiveRef.current = false
     }
   }
 
@@ -248,6 +267,8 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
     cancelSession()
     resetSession()
     handleRemoveImage()
+    setIsStartingLive(false)
+    isStartingLiveRef.current = false
     setPrompt(promptManager.getDefaultPrompt())
     onClose()
   }
@@ -490,11 +511,11 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
             <Button
               variant="primary"
               onClick={handleGoLive}
-              isLoading={isSessionLoading}
-              disabled={!preparedImage || isSessionLoading || isProcessingImage}
+              isLoading={isSessionLoading || isStartingLive}
+              disabled={!preparedImage || isSessionLoading || isStartingLive || isProcessingImage}
               leftIcon={<Radio className="w-4 h-4" />}
             >
-              {isSessionLoading ? 'Verifying & Preparing...' : 'Go Live'}
+              {isSessionLoading || isStartingLive ? 'Verifying & Preparing...' : 'Go Live'}
             </Button>
           </div>
         </div>
