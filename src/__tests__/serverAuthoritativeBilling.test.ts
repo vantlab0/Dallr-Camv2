@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
  * Server-Authoritative Billing Specification Tests
  *
  * Simulates the exact PostgreSQL database semantics defined in
- * supabase/migrations/20240105000000_server_authoritative_billing.sql:
+ * supabase/migrations/20240106000000_server_authoritative_billing.sql:
  *
  * 1. start_live_session:
  *    - Prevents multiple concurrent active sessions for the same user.

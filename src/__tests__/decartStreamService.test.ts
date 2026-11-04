@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { decartStreamService } from '@/services/decartStreamService'
 import { decartService } from '@/services/decartService'
+import { sessionBillingService } from '@/services/sessionBillingService'
 import { supabase } from '@/lib/supabase'
 import { walletService } from '@/services/walletService'
 import type { PreparedImageReference } from '@/types/live'
@@ -87,6 +88,21 @@ describe('decartStreamService', () => {
     expect(decartStreamService.getState()).toBe('idle')
     expect(decartStreamService.getLocalStream()).toBeNull()
     expect(decartStreamService.getRemoteStream()).toBeNull()
+  })
+
+  it('terminates stream when billing service emits an error', async () => {
+    const endSpy = vi.spyOn(decartStreamService, 'endLiveStream')
+    const errorSpy = vi.fn()
+    decartStreamService.setListeners({ onError: errorSpy })
+
+    // Trigger billing onError listener
+    sessionBillingService['listeners'].onError?.('Heartbeat failure')
+
+    expect(errorSpy).toHaveBeenCalledWith({
+      code: 'BILLING_ERROR',
+      message: 'Heartbeat failure',
+    })
+    expect(endSpy).toHaveBeenCalled()
   })
 
   it('handles permission denied when camera access is rejected', async () => {

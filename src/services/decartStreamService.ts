@@ -53,7 +53,9 @@ export class DecartStreamService {
         void this.endLiveStream()
       },
       onError: (errMsg) => {
-        console.warn('Billing service error:', errMsg)
+        console.warn('Billing service error terminating stream:', errMsg)
+        this.listeners.onError?.({ code: 'BILLING_ERROR', message: errMsg })
+        void this.endLiveStream()
       },
     })
   }
@@ -191,7 +193,14 @@ export class DecartStreamService {
           // Authoritatively start billing only if not already active or starting
           const billingState = sessionBillingService.getState()
           if (!billingState.isActive && !billingState.isStarting) {
-            void sessionBillingService.startSession(realtimeClient.sessionId || undefined)
+            sessionBillingService
+              .startSession(realtimeClient.sessionId || undefined)
+              .catch((err: unknown) => {
+                const message = err instanceof Error ? err.message : 'Failed to start billing session'
+                console.error('Billing startup failed, terminating live stream:', message)
+                this.listeners.onError?.({ code: 'BILLING_START_FAILED', message })
+                void this.endLiveStream()
+              })
           }
         } else if (state === 'reconnecting') {
           this.updateState('reconnecting')

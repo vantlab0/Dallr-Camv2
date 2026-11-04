@@ -18,6 +18,10 @@
 --    - Idempotent: terminates exactly once, subsequent calls return finalized state without charging further.
 -- 5. Updates `reconcile_stale_sessions` to clean up abandoned sessions.
 
+-- 0. Drop obsolete client-duration billing stored procedures
+DROP FUNCTION IF EXISTS public.heartbeat_and_meter_session(UUID, UUID, BIGINT);
+DROP FUNCTION IF EXISTS public.end_live_session(UUID, UUID, BIGINT);
+
 -- 1. Schema modification: add last_billed_at
 ALTER TABLE public.live_sessions
   ADD COLUMN IF NOT EXISTS last_billed_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now());
@@ -212,8 +216,8 @@ BEGIN
   END IF;
 
   -- Apply heartbeat lease timeout policy:
-  -- If elapsed time exceeds v_max_lease_seconds, cap billable seconds to v_max_lease_seconds.
-  -- This guarantees that customer is never billed for unreceived/dead connection time during network interruptions.
+  -- If elapsed time exceeds v_max_lease_seconds, cap billable seconds to v_max_lease_seconds
+  -- and reset last_billed_at to v_now so unreceived/dead connection time is never charged in future steps.
   IF v_raw_elapsed_seconds > v_max_lease_seconds THEN
     v_billable_delta_seconds := v_max_lease_seconds;
   ELSE
@@ -257,12 +261,17 @@ BEGIN
     )
     RETURNING id INTO v_tx_id;
 
-    -- Update session record: advance last_billed_at by the exact billed duration
+    -- Update session record:
+    -- If elapsed time exceeded max lease, advance last_billed_at directly to v_now to eliminate dead lag backlog;
+    -- otherwise advance last_billed_at by the exact billable delta.
     UPDATE public.live_sessions
     SET
       duration_seconds = duration_seconds + v_billable_delta_seconds,
       billed_amount = billed_amount + v_debit_amount_cents,
-      last_billed_at = last_billed_at + (v_billable_delta_seconds || ' seconds')::INTERVAL,
+      last_billed_at = CASE
+        WHEN v_raw_elapsed_seconds > v_max_lease_seconds THEN v_now
+        ELSE last_billed_at + (v_billable_delta_seconds || ' seconds')::INTERVAL
+      END,
       last_heartbeat_at = v_now
     WHERE id = v_session.id;
 

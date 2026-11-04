@@ -28,6 +28,10 @@ Phase 7 delivers authoritative backend-controlled session metering, cumulative i
 - `supabase/migrations/20240101000000_create_profiles.sql`: User profiles and signup triggers.
 - `supabase/migrations/20240102000000_create_wallets_and_payments.sql`: Wallets, transactions, Paystack records, and RLS.
 - `supabase/migrations/20240103000000_create_live_sessions_and_billing.sql`: `live_sessions` table, `start_live_session`, `heartbeat_and_meter_session`, `end_live_session`, and `reconcile_stale_sessions` stored procedures.
+- `supabase/migrations/20240104000000_harden_security_and_billing.sql`: Security definer path isolation, caller ownership, and billing hardening.
+- `supabase/migrations/20240105000000_secure_paystack_payments.sql`: FOR UPDATE row-locking on payment verification and service_role security.
+- `supabase/migrations/20240106000000_server_authoritative_billing.sql`: Server timestamp metering, 15s lease bounding, and dropping obsolete billing RPC signatures.
+- `supabase/migrations/20240107000000_prevent_duplicate_live_sessions.sql`: Partial unique index on active sessions and idempotent start_live_session.
 
 ### 3. Comprehensive Documentation
 - See [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md) for full system architecture, database schema, API contracts, security review, known limitations, and Windows/macOS native build instructions.

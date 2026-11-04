@@ -32,6 +32,7 @@ export type StreamRelayRole = 'sender' | 'receiver'
 export class StreamRelayService {
   private channel: BroadcastChannel | null = null
   private peerConnection: RTCPeerConnection | null = null
+  private pendingIceCandidates: RTCIceCandidateInit[] = []
   private role: StreamRelayRole | null = null
   private activeStream: MediaStream | null = null
 
@@ -245,6 +246,7 @@ export class StreamRelayService {
           }
           if (this.peerConnection) {
             await this.peerConnection.setRemoteDescription(new RTCSessionDescription(msg.sdp))
+            await this.drainPendingIceCandidates()
             const answer = await this.peerConnection.createAnswer()
             await this.peerConnection.setLocalDescription(answer)
             this.sendSignalingMessage({
@@ -259,15 +261,21 @@ export class StreamRelayService {
         // Sender handles answer from receiver
         if (this.role === 'sender' && msg.sdp && this.peerConnection) {
           await this.peerConnection.setRemoteDescription(new RTCSessionDescription(msg.sdp))
+          await this.drainPendingIceCandidates()
         }
         break
 
       case 'relay-ice-candidate':
-        if (this.peerConnection && msg.candidate) {
-          try {
-            await this.peerConnection.addIceCandidate(new RTCIceCandidate(msg.candidate))
-          } catch (err) {
-            console.warn('Error adding ICE candidate in relay:', err)
+        if (msg.candidate) {
+          if (this.peerConnection && this.peerConnection.remoteDescription && this.peerConnection.remoteDescription.type) {
+            try {
+              await this.peerConnection.addIceCandidate(new RTCIceCandidate(msg.candidate))
+            } catch (err) {
+              console.warn('Error adding ICE candidate in relay:', err)
+            }
+          } else {
+            // Buffer candidate until remote description is set
+            this.pendingIceCandidates.push(msg.candidate)
           }
         }
         break
@@ -287,7 +295,25 @@ export class StreamRelayService {
     }
   }
 
+  private async drainPendingIceCandidates() {
+    if (!this.peerConnection || !this.peerConnection.remoteDescription || this.pendingIceCandidates.length === 0) {
+      return
+    }
+
+    const candidates = [...this.pendingIceCandidates]
+    this.pendingIceCandidates = []
+
+    for (const candidate of candidates) {
+      try {
+        await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate))
+      } catch (err) {
+        console.warn('Error applying buffered ICE candidate:', err)
+      }
+    }
+  }
+
   public cleanupPeer() {
+    this.pendingIceCandidates = []
     if (this.peerConnection) {
       try {
         this.peerConnection.close()

@@ -64,4 +64,31 @@ describe('VideoWindowManager', () => {
     const isClosed = await manager.isWindowOpen()
     expect(isClosed).toBe(false)
   })
+
+  it('handles native Tauri WebviewWindow creation with borderless properties', async () => {
+    // Mock Tauri window environment
+    vi.stubGlobal('__TAURI_INTERNALS__', {})
+    const showMock = vi.fn().mockResolvedValue(undefined)
+    const setFocusMock = vi.fn().mockResolvedValue(undefined)
+    const listenMock = vi.fn().mockResolvedValue(vi.fn())
+
+    class MockWebviewWindow {
+      static getByLabel = vi.fn().mockResolvedValue(null)
+      show = showMock
+      setFocus = setFocusMock
+      listen = listenMock
+      once = vi.fn()
+      constructor(public label: string, public options: any) {}
+    }
+
+    vi.doMock('@tauri-apps/api/webviewWindow', () => ({
+      WebviewWindow: MockWebviewWindow,
+    }))
+
+    const tauriManager = new VideoWindowManager()
+    await tauriManager.openVideoWindow({ width: 1280, height: 720 })
+
+    expect(showMock).toHaveBeenCalled()
+    expect(setFocusMock).toHaveBeenCalled()
+  })
 })
