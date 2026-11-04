@@ -4,6 +4,36 @@ Dallr Cam is a desktop studio application built with **Tauri 2**, **React 19**, 
 
 ---
 
+## Phase 7: Real-Time Session Billing, Security & Production Readiness
+
+Phase 7 delivers authoritative backend-controlled session metering, cumulative integer arithmetic billing, low and critical balance notifications, automatic fund-exhaustion teardown, and production desktop builds for Windows and macOS.
+
+### 1. Authoritative Session Metering & Business Rules
+- **Wallet Currency**: United States Dollar (`USD`)
+- **Payment Currency**: Nigerian Naira (`NGN`) via Paystack checkout
+- **Minimum Top-Up**: **$15.00 USD** equivalent (strictly enforced)
+- **Billing Rate**: **$0.04 USD per second** (4 cents / billable second)
+  - 60 seconds = $2.40 USD (240 cents)
+  - 120 seconds = $4.80 USD (480 cents)
+  - 300 seconds = $12.00 USD (1200 cents)
+  - 375 seconds = $15.00 USD (1500 cents)
+- **Activation Gate**: Usage metering initiates only once Decart Lucy 2.5 confirms an active generating WebRTC stream.
+- **Heartbeat Cadence**: 5 seconds cumulative usage reporting via `sessionBillingService` and `session-heartbeat` Edge Function.
+- **Balance Warnings**:
+  - Low balance warning when balance covers `< 30s` ($1.20 USD).
+  - Critical balance warning when balance covers `< 10s` ($0.40 USD).
+  - Automatic stream termination and window closure when funds are exhausted.
+
+### 2. Database Migrations & Tables
+- `supabase/migrations/20240101000000_create_profiles.sql`: User profiles and signup triggers.
+- `supabase/migrations/20240102000000_create_wallets_and_payments.sql`: Wallets, transactions, Paystack records, and RLS.
+- `supabase/migrations/20240103000000_create_live_sessions_and_billing.sql`: `live_sessions` table, `start_live_session`, `heartbeat_and_meter_session`, `end_live_session`, and `reconcile_stale_sessions` stored procedures.
+
+### 3. Comprehensive Documentation
+- See [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md) for full system architecture, database schema, API contracts, security review, known limitations, and Windows/macOS native build instructions.
+
+---
+
 ## Phase 5: Decart Lucy 2.5 Real-Time Video Transformation
 
 Phase 5 integrates the official `@decartai/sdk` and establishes a real-time WebRTC transformation session utilizing the **Decart Lucy 2.5** model (`lucy-2.5`).

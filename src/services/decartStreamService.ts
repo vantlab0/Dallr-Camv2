@@ -1,5 +1,6 @@
 import { createDecartClient, models, type RealTimeClient, type DecartSDKError } from '@decartai/sdk'
 import { decartService } from '@/services/decartService'
+import { sessionBillingService } from '@/services/sessionBillingService'
 import type {
   PreparedImageReference,
   LiveStreamConnectionState,
@@ -14,6 +15,7 @@ export interface DecartStreamServiceListeners {
   onGenerationTick?: (data: { seconds: number; usageUSD: number }) => void
   onError?: (error: { code: string; message: string }) => void
   onStats?: (stats: LiveStreamMetrics) => void
+  onInsufficientFunds?: (data: { seconds: number; billedUSD: number }) => void
 }
 
 export interface ConnectStreamOptions {
@@ -40,6 +42,19 @@ export class DecartStreamService {
 
   constructor() {
     this.initDecartClient()
+    this.initBillingListeners()
+  }
+
+  private initBillingListeners() {
+    sessionBillingService.setListeners({
+      onInsufficientFundsTerminated: (seconds, billedUSD) => {
+        this.listeners.onInsufficientFunds?.({ seconds, billedUSD })
+        void this.endLiveStream()
+      },
+      onError: (errMsg) => {
+        console.warn('Billing service error:', errMsg)
+      },
+    })
   }
 
   private initDecartClient() {
@@ -166,6 +181,8 @@ export class DecartStreamService {
       realtimeClient.on('connectionChange', (state) => {
         if (state === 'connected' || state === 'generating') {
           this.updateState('connected')
+          // Authoritatively start billing when confirmed active and ready
+          void sessionBillingService.startSession(realtimeClient.sessionId || undefined)
         } else if (state === 'reconnecting') {
           this.updateState('reconnecting')
         } else if (state === 'connecting') {
@@ -173,11 +190,13 @@ export class DecartStreamService {
         } else if (state === 'disconnected') {
           if (this.currentState !== 'ending' && this.currentState !== 'ended') {
             this.updateState('failed')
+            void sessionBillingService.endSession()
           }
         }
       })
 
       realtimeClient.on('generationTick', ({ seconds }) => {
+        sessionBillingService.onGenerationTick(seconds)
         const usageUSD = Number((seconds * this.ratePerSecondUSD).toFixed(4))
         this.listeners.onGenerationTick?.({ seconds, usageUSD })
       })
@@ -294,6 +313,7 @@ export class DecartStreamService {
       this.cleanupMedia()
       this.currentSession = null
       this.updateState('ended')
+      await sessionBillingService.endSession()
       setTimeout(() => {
         if (this.currentState === 'ended') {
           this.updateState('idle')

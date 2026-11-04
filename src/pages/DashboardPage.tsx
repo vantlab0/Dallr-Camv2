@@ -9,6 +9,7 @@ import { CompactLiveStatus } from '@/components/live/CompactLiveStatus'
 import { decartStreamService } from '@/services/decartStreamService'
 import { videoWindowManager } from '@/services/videoWindowManager'
 import { streamRelayService } from '@/services/streamRelayService'
+import { sessionBillingService } from '@/services/sessionBillingService'
 import { useWallet } from '@/hooks/useWallet'
 import { Layers, ShieldCheck, Zap } from 'lucide-react'
 
@@ -89,6 +90,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       streamRelayService.notifySessionEnded()
       await videoWindowManager.closeVideoWindow()
       await decartStreamService.endLiveStream()
+      await sessionBillingService.endSession()
     } finally {
       setIsStreamActive(false)
       setIsEnding(false)
@@ -97,6 +99,19 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       void refreshWallet()
     }
   }
+
+  // Handle application unload / window close cleanup
+  React.useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (sessionBillingService.getState().isActive) {
+        void sessionBillingService.endSession()
+      }
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  }, [])
 
   const handleReopenOutputWindow = async () => {
     await videoWindowManager.openVideoWindow({
