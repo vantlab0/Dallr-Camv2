@@ -174,10 +174,10 @@ describe('LiveSetupModal Component', () => {
     const goLiveBtn = screen.getByRole('button', { name: /go live/i })
     await user.click(goLiveBtn)
 
+    // Streamlined flow: Go Live directly connects to Decart Lucy 2.5
     await waitFor(() => {
-      expect(screen.getByText('Ready for Decart Real-Time Video Engine')).toBeInTheDocument()
-      expect(screen.getByText('Session Prepared & Verified')).toBeInTheDocument()
-      expect(screen.getByText('$50.00 USD')).toBeInTheDocument()
+      expect(screen.getByText('Decart Lucy 2.5 Live Stream')).toBeInTheDocument()
+      expect(screen.getByText('Decart Lucy 2.5 (720p)')).toBeInTheDocument()
     })
   })
 

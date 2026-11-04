@@ -2,6 +2,7 @@
 // Issues authorized short-lived Decart client tokens for real-time video transformation.
 // Authenticates user JWT, verifies wallet eligibility (has at least 1 second balance = $0.04 USD / 4 cents),
 // and creates a client token scoped strictly to 'lucy-2.5'.
+// Uses the officially supported Decart SDK endpoint and request structure.
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
@@ -75,15 +76,20 @@ serve(async (req) => {
       )
     }
 
-    // 3. Request short-lived client token from Decart API
+    // 3. Request short-lived client token from Decart API (scoped to lucy-2.5 with 300s expiry)
     const decartRes = await fetch('https://api.decart.ai/v1/client_tokens', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${decartApiKey}`,
+        Authorization: `Bearer ${decartApiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'lucy-2.5',
+        allowedModels: ['lucy-2.5'],
+        expiresIn: 300,
+        metadata: {
+          user_id: user.id,
+          app: 'Dallr Cam',
+        },
       }),
     })
 
@@ -96,12 +102,16 @@ serve(async (req) => {
     }
 
     const decartData = await decartRes.json()
+    const apiKey = decartData.apiKey || decartData.token || decartData.client_token || decartData.access_token
+    const expiresAt = decartData.expiresAt || decartData.expires_at || new Date(Date.now() + 300000).toISOString()
 
     return new Response(
       JSON.stringify({
-        token: decartData.token || decartData.client_token || decartData.access_token,
-        expires_at: decartData.expires_at || null,
-        model: 'lucy-2.5',
+        apiKey,
+        token: decartData.token || apiKey,
+        expiresAt,
+        permissions: decartData.permissions || { models: ['lucy-2.5'] },
+        constraints: decartData.constraints || null,
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )

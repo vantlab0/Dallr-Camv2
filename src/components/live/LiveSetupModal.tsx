@@ -16,7 +16,6 @@ import {
   RotateCcw,
   Wallet,
   Loader2,
-  Video,
 } from 'lucide-react'
 import { validateAndProcessReferenceImage, ImageValidationError } from '@/services/imageService'
 import { useLiveSession } from '@/hooks/useLiveSession'
@@ -75,10 +74,8 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const {
-    status: prepStatus,
     isLoading: isSessionLoading,
     error: sessionError,
-    preparedSession,
     prepareLiveSession,
     cancelSession,
     resetSession,
@@ -182,16 +179,6 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
     }
   }
 
-  const handleGoLive = async () => {
-    if (!preparedImage) {
-      setImageError('Please select a reference image before starting the live video call.')
-      return
-    }
-
-    promptManager.setActivePrompt(prompt)
-    await prepareLiveSession(preparedImage, prompt)
-  }
-
   const handleEndLiveStream = useCallback(async () => {
     try {
       streamRelayService.notifySessionEnded()
@@ -209,21 +196,28 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
     }
   }, [resetSession, onClose])
 
-  // Start real-time stream via decartStreamService
-  const handleLaunchEngine = useCallback(async () => {
-    if (!preparedImage) return
-    const rate = preparedSession?.ratePerSecondUSD ?? 0.04
+  // Direct Go Live connection: prepares session and connects directly to Decart Lucy 2.5
+  const handleGoLive = async () => {
+    if (!preparedImage) {
+      setImageError('Please select a reference image before starting the live video call.')
+      return
+    }
+
+    promptManager.setActivePrompt(prompt)
+    const prep = await prepareLiveSession(preparedImage, prompt)
+    if (!prep) return
+
     setIsStreaming(true)
     setStreamError(null)
     try {
       const session = await decartStreamService.startLiveStream({
         referenceImage: preparedImage,
         prompt,
-        ratePerSecondUSD: rate,
+        ratePerSecondUSD: prep.ratePerSecondUSD ?? 0.04,
       })
       setStreamSessionInfo(session)
 
-      // Open borderless native video window
+      // Automatically open borderless native video window
       await videoWindowManager.openVideoWindow({
         onClose: () => {
           void handleEndLiveStream()
@@ -233,7 +227,7 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
       const msg = err instanceof Error ? err.message : 'Failed to connect to Decart Lucy 2.5 stream.'
       setStreamError(msg)
     }
-  }, [preparedImage, prompt, preparedSession, handleEndLiveStream])
+  }
 
   useEffect(() => {
     streamRelayService.onRequestEndSession(() => {
@@ -293,66 +287,6 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
             onEndStream={handleEndLiveStream}
             onDismissError={() => setStreamError(null)}
           />
-        </div>
-      ) : prepStatus === 'ready_for_engine' && preparedSession ? (
-        /* READY FOR ENGINE INTERMEDIATE STATE */
-        <div className="py-6 space-y-5 text-center">
-          <div className="w-16 h-16 mx-auto rounded-full bg-red-950/40 border border-red-500/50 flex items-center justify-center text-[#ef4444] animate-pulse">
-            <Radio className="w-8 h-8" />
-          </div>
-
-          <div>
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-xs font-semibold uppercase tracking-wider">
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-              Session Prepared & Verified
-            </span>
-            <h4 className="text-lg font-bold text-[#f4f4f5] mt-2">
-              Ready for Decart Real-Time Video Engine
-            </h4>
-            <p className="text-xs text-[#a1a1aa] mt-1.5 max-w-md mx-auto leading-relaxed">
-              Reference portrait validated and decoded ({preparedSession.referenceImage.width}×
-              {preparedSession.referenceImage.height}px). User authenticated and USD wallet verified with sufficient balance.
-            </p>
-          </div>
-
-          <div className="bg-[#121215] border border-[#27272a] rounded-xl p-4 max-w-md mx-auto text-left space-y-2.5 text-xs">
-            <div className="flex items-center justify-between pb-2 border-b border-[#27272a]">
-              <span className="text-[#a1a1aa]">Session ID</span>
-              <span className="font-mono text-[#f4f4f5] text-[11px]">{preparedSession.sessionId}</span>
-            </div>
-            <div className="flex items-center justify-between pb-2 border-b border-[#27272a]">
-              <span className="text-[#a1a1aa]">Billing Rate</span>
-              <span className="text-[#f4f4f5] font-medium">${preparedSession.ratePerSecondUSD.toFixed(2)}/sec</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[#a1a1aa]">Current Balance</span>
-              <span className="text-emerald-400 font-semibold">${preparedSession.initialBalanceUSD.toFixed(2)} USD</span>
-            </div>
-          </div>
-
-          {preparedImage && (
-            <div className="w-24 h-24 mx-auto rounded-xl overflow-hidden border-2 border-[#ef4444] shadow-lg relative">
-              <img
-                src={preparedImage.dataUrl}
-                alt="Broadcast avatar"
-                className="w-full h-full object-cover"
-              />
-            </div>
-          )}
-
-          <div className="pt-2 flex items-center justify-center gap-3">
-            <Button
-              variant="primary"
-              onClick={handleLaunchEngine}
-              className="w-full sm:w-auto"
-              leftIcon={<Video className="w-4 h-4" />}
-            >
-              Connect to Decart Lucy 2.5
-            </Button>
-            <Button variant="secondary" onClick={handleResetAll} className="w-full sm:w-auto">
-              Return to Studio Dashboard
-            </Button>
-          </div>
         </div>
       ) : (
         /* SETUP WORKFLOW FORM */

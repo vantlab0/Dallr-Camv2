@@ -66,7 +66,22 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
       setActivePayment(payment)
 
       if (payment.authorization_url) {
-        window.open(payment.authorization_url, '_blank', 'noopener,noreferrer')
+        // Handle desktop Tauri environment vs browser
+        const isTauri = typeof window !== 'undefined' &&
+          (('__TAURI_INTERNALS__' in window) ||
+           ('__TAURI__' in window) ||
+           Boolean((window as unknown as { isTauri?: boolean }).isTauri))
+
+        if (isTauri) {
+          try {
+            // Use window.open or browser opener
+            window.open(payment.authorization_url, '_blank')
+          } catch {
+            window.location.href = payment.authorization_url
+          }
+        } else {
+          window.open(payment.authorization_url, '_blank', 'noopener,noreferrer')
+        }
       }
     } catch (err) {
       setStatusMessage(err instanceof Error ? err.message : 'Could not initialize payment')
