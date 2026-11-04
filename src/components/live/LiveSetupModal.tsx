@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { Modal } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
 import {
@@ -16,11 +16,19 @@ import {
   RotateCcw,
   Wallet,
   Loader2,
+  Video,
 } from 'lucide-react'
 import { validateAndProcessReferenceImage, ImageValidationError } from '@/services/imageService'
 import { useLiveSession } from '@/hooks/useLiveSession'
 import { promptManager, DEFAULT_TRANSFORMATION_PROMPT } from '@/config/prompts'
-import type { PreparedImageReference } from '@/types/live'
+import { LiveStreamView } from '@/components/live/LiveStreamView'
+import { decartStreamService } from '@/services/decartStreamService'
+import type {
+  PreparedImageReference,
+  LiveStreamSessionInfo,
+  LiveStreamMetrics,
+  LiveSessionStatus,
+} from '@/types/live'
 
 interface LiveSetupModalProps {
   isOpen: boolean
@@ -44,10 +52,21 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
   const [isPromptExpanded, setIsPromptExpanded] = useState<boolean>(false)
   const [imageError, setImageError] = useState<string | null>(null)
 
+  // Real-time Decart live stream state
+  const [isStreaming, setIsStreaming] = useState<boolean>(false)
+  const [streamStatus, setStreamStatus] = useState<LiveSessionStatus>('idle')
+  const [streamError, setStreamError] = useState<string | null>(null)
+  const [streamSessionInfo, setStreamSessionInfo] = useState<LiveStreamSessionInfo | null>(null)
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null)
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null)
+  const [elapsedSeconds, setElapsedSeconds] = useState<number>(0)
+  const [usageUSD, setUsageUSD] = useState<number>(0)
+  const [metrics, setMetrics] = useState<LiveStreamMetrics | null>(null)
+
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const {
-    status,
+    status: prepStatus,
     isLoading: isSessionLoading,
     error: sessionError,
     preparedSession,
@@ -56,6 +75,36 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
     resetSession,
     clearError: clearSessionError,
   } = useLiveSession({ userId })
+
+  // Listen to decartStreamService lifecycle events
+  useEffect(() => {
+    decartStreamService.setListeners({
+      onStateChange: (st) => {
+        setStreamStatus(st)
+        if (st === 'ended' || st === 'failed') {
+          // Keep video elements clean
+          setRemoteStream(null)
+          setLocalStream(null)
+        }
+      },
+      onRemoteStream: (stream) => {
+        setRemoteStream(stream)
+      },
+      onLocalStream: (stream) => {
+        setLocalStream(stream)
+      },
+      onError: (err) => {
+        setStreamError(err.message)
+      },
+      onGenerationTick: (tick) => {
+        setElapsedSeconds(tick.seconds)
+        setUsageUSD(tick.usageUSD)
+      },
+      onStats: (stats: LiveStreamMetrics) => {
+        setMetrics(stats)
+      },
+    })
+  }, [])
 
   const handleProcessFile = async (file: File) => {
     setImageError(null)
@@ -122,7 +171,50 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
     await prepareLiveSession(preparedImage, prompt)
   }
 
+  // Start real-time stream via decartStreamService
+  const handleLaunchEngine = useCallback(async () => {
+    if (!preparedImage) return
+    const rate = preparedSession?.ratePerSecondUSD ?? 0.04
+    setIsStreaming(true)
+    setStreamError(null)
+    try {
+      const session = await decartStreamService.startLiveStream({
+        referenceImage: preparedImage,
+        prompt,
+        ratePerSecondUSD: rate,
+      })
+      setStreamSessionInfo(session)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to connect to Decart Lucy 2.5 stream.'
+      setStreamError(msg)
+    }
+  }, [preparedImage, prompt, preparedSession])
+
+  const handleEndLiveStream = useCallback(async () => {
+    try {
+      await decartStreamService.endLiveStream()
+    } finally {
+      setIsStreaming(false)
+      setStreamSessionInfo(null)
+      setRemoteStream(null)
+      setLocalStream(null)
+      setElapsedSeconds(0)
+      setUsageUSD(0)
+      resetSession()
+      onClose()
+    }
+  }, [resetSession, onClose])
+
+  const handleUpdatePrompt = useCallback(async (newPrompt: string) => {
+    await decartStreamService.updatePrompt(newPrompt)
+    setPrompt(newPrompt)
+  }, [])
+
   const handleResetAll = () => {
+    if (isStreaming) {
+      void handleEndLiveStream()
+      return
+    }
     cancelSession()
     resetSession()
     handleRemoveImage()
@@ -138,12 +230,33 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
     <Modal
       isOpen={isOpen}
       onClose={handleResetAll}
-      title="Live Video Call Setup"
-      description="Select reference portrait and prepare pipeline prior to initializing Decart live streaming."
-      maxWidth="lg"
+      title={isStreaming ? 'Decart Lucy 2.5 Live Stream' : 'Live Video Call Setup'}
+      description={
+        isStreaming
+          ? 'Real-time AI video transformation streamed from Decart Lucy 2.5 engine over WebRTC.'
+          : 'Select reference portrait and prepare pipeline prior to initializing Decart live streaming.'
+      }
+      maxWidth={isStreaming ? '3xl' : 'lg'}
     >
-      {/* SUCCESS / READY FOR ENGINE STATE */}
-      {status === 'ready_for_engine' && preparedSession ? (
+      {/* ACTIVE REAL-TIME STREAM VIEW */}
+      {isStreaming ? (
+        <div className="h-[520px] w-full flex flex-col">
+          <LiveStreamView
+            status={streamStatus}
+            error={streamError}
+            sessionInfo={streamSessionInfo}
+            remoteStream={remoteStream}
+            localStream={localStream}
+            elapsedSeconds={elapsedSeconds}
+            usageUSD={usageUSD}
+            metrics={metrics}
+            onUpdatePrompt={handleUpdatePrompt}
+            onEndStream={handleEndLiveStream}
+            onDismissError={() => setStreamError(null)}
+          />
+        </div>
+      ) : prepStatus === 'ready_for_engine' && preparedSession ? (
+        /* READY FOR ENGINE INTERMEDIATE STATE */
         <div className="py-6 space-y-5 text-center">
           <div className="w-16 h-16 mx-auto rounded-full bg-red-950/40 border border-red-500/50 flex items-center justify-center text-[#ef4444] animate-pulse">
             <Radio className="w-8 h-8" />
@@ -189,6 +302,14 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
           )}
 
           <div className="pt-2 flex items-center justify-center gap-3">
+            <Button
+              variant="primary"
+              onClick={handleLaunchEngine}
+              className="w-full sm:w-auto"
+              leftIcon={<Video className="w-4 h-4" />}
+            >
+              Connect to Decart Lucy 2.5
+            </Button>
             <Button variant="secondary" onClick={handleResetAll} className="w-full sm:w-auto">
               Return to Studio Dashboard
             </Button>

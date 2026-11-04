@@ -18,8 +18,38 @@ export type LiveSessionStatus =
   | 'preparing'
   | 'ready_for_engine'
   | 'connecting'
+  | 'connected'
+  | 'reconnecting'
   | 'failed'
+  | 'ending'
+  | 'ended'
   | 'cancelled'
+
+export type LiveStreamConnectionState =
+  | 'idle'
+  | 'preparing'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'failed'
+  | 'ending'
+  | 'ended'
+
+export interface LiveStreamMetrics {
+  fps?: number
+  bitrate?: number
+  packetLoss?: number
+  rttMs?: number
+}
+
+export interface LiveStreamSessionInfo {
+  sessionId: string
+  subscribeToken?: string
+  modelName: 'lucy-2.5'
+  prompt: string
+  referenceImage: PreparedImageReference
+  startedAt: string
+}
 
 export interface LiveSessionValidationResult {
   isValid: boolean
@@ -51,4 +81,10 @@ export interface LiveSessionState {
   isLoading: boolean
   error: string | null
   preparedSession: PreparedLiveSession | null
+  activeStreamSession: LiveStreamSessionInfo | null
+  elapsedSeconds: number
+  usageUSD: number
+  remoteStream: MediaStream | null
+  localStream: MediaStream | null
+  metrics: LiveStreamMetrics | null
 }

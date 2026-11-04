@@ -4,6 +4,57 @@ Dallr Cam is a desktop studio application built with **Tauri 2**, **React 19**, 
 
 ---
 
+## Phase 5: Decart Lucy 2.5 Real-Time Video Transformation
+
+Phase 5 integrates the official `@decartai/sdk` and establishes a real-time WebRTC transformation session utilizing the **Decart Lucy 2.5** model (`lucy-2.5`).
+
+### 1. Decart SDK & Model Specifications
+- **SDK Package**: `@decartai/sdk` (v0.2.14+)
+- **Model Identifier**: `lucy-2.5` (`models.realtime("lucy-2.5")`)
+- **Native Resolution**: 1280×720 (720p) at 30 fps
+- **Transport**: WebRTC
+- **Reference Image**: Supported formats: PNG, JPG, JPEG, WebP. Kept in memory (decoded base64 dataUrl / Blob) without cloud upload.
+- **Prompt Enhancement**: Enabled by default (`enhance: true`) to adapt instructions to camera feeds and reference images.
+- **Dynamic Updates**: Uses unified atomic `set({ prompt, image, enhance: true })` or `setPrompt()` to modify styles without dropping the WebRTC connection.
+
+### 2. Secure Backend Architecture
+- **Permanent Secret Isolation**: The permanent secret key (`DECART_API_KEY`) is stored strictly on the backend / Supabase Edge Functions. It is never bundled into or accessible by the client desktop app.
+- **Short-Lived Client Tokens**: Tokens are generated on the server with a configurable TTL (default 300s / 5 minutes), scoped strictly to `allowedModels: ["lucy-2.5"]`.
+- **Pre-flight Wallet Verification**: Before minting a client token, the backend authenticates the user's Supabase JWT and checks that the user's USD wallet holds at least $0.04 USD (4 cents, representing at least 1 second of live streaming at $0.04/sec).
+- **Backend Function**: `supabase/functions/create-decart-token/index.ts`
+  - Validates `Authorization: Bearer <jwt>`.
+  - Verifies USD wallet balance `>= 4` cents.
+  - Calls Decart `client.tokens.create({ expiresIn: 300, allowedModels: ["lucy-2.5"] })`.
+  - Returns `{ apiKey, expiresAt, permissions, constraints }`.
+
+### 3. Stream Architecture & Multi-Window Readiness (Phase 6)
+- **Service Layer**: `src/services/decartStreamService.ts` implements a modular singleton managing the WebRTC connection, camera tracks, event callbacks, and cleanup.
+- **Shared Stream State**: Exposes `sessionId`, `subscribeToken`, `localStream`, and `remoteStream`.
+- **Stream Sharing for Phase 6**: Other Tauri windows can subscribe to active sessions via `client.realtime.subscribe({ token: subscribeToken })` without duplicating camera hardware locks or opening redundant upstream encoder connections.
+- **Lifecycle States**:
+  - `idle`: Camera and WebRTC idle.
+  - `preparing`: Pre-flight eligibility validated and camera media stream acquired.
+  - `connecting`: WebRTC peer connection dialing Decart signaling.
+  - `connected`: Active live stream transforming frames in real-time.
+  - `reconnecting`: Automatic exponential-backoff retry on network interruption.
+  - `failed`: Terminal failure or credential rejection.
+  - `ending`: Teardown initiated.
+  - `ended`: Resources cleanly released.
+
+### 4. UI Components
+- **`LiveStreamView.tsx`**:
+  - Displays primary transformed Decart WebRTC remote stream.
+  - Displays picture-in-picture local camera preview and reference portrait.
+  - Live session header with pulsating "LIVE" indicator, model tag ("Decart Lucy 2.5 (720p)"), connection status badge, live duration timer, and real-time USD billing counter ($0.04/sec).
+  - Dynamic prompt input bar to update prompts on the fly via `updatePrompt`.
+  - Actionable error banner with dismiss and auto-recovery.
+  - "End Stream" button for graceful teardown.
+- **`LiveSetupModal.tsx`**:
+  - Manages portrait selection, validation, and pre-flight checks.
+  - Transitions into live streaming mode upon user initiating live stream.
+
+---
+
 ## Phase 3: Real Wallet & Paystack Payment Infrastructure
 
 Phase 3 introduces production-ready USD wallet accounting, Paystack NGN checkout integration, backend-controlled exchange rates, and idempotent webhook verification.
@@ -25,73 +76,28 @@ Database migration files are located under `supabase/migrations/`:
 - `20240101000000_create_profiles.sql` (Phase 2 Auth & Profiles)
 - `20240102000000_create_wallets_and_payments.sql` (Phase 3 Wallets & Payments)
 
-### Tables
-1. **`wallets`**:
-   - `id`: UUID Primary Key
-   - `user_id`: UUID References `auth.users(id)` ON DELETE CASCADE (UNIQUE)
-   - `currency`: TEXT (CHECK `currency = 'USD'`)
-   - `balance`: BIGINT (Stored in integer cents, CHECK `balance >= 0`)
-   - `created_at`, `updated_at`: TIMESTAMPTZ
-
-2. **`wallet_transactions`**:
-   - `id`: UUID Primary Key
-   - `wallet_id`: UUID References `public.wallets(id)` ON DELETE CASCADE
-   - `user_id`: UUID References `auth.users(id)` ON DELETE CASCADE
-   - `type`: TEXT (`top_up`, `live_session_charge`, `refund`, `adjustment`)
-   - `amount`: BIGINT (Minor units in cents: positive for credits, negative for debits)
-   - `currency`: TEXT (`USD`)
-   - `status`: TEXT (`pending`, `completed`, `failed`, `reversed`)
-   - `reference`: TEXT (Unique external reference, e.g. Paystack reference)
-   - `description`: TEXT
-   - `created_at`: TIMESTAMPTZ
-
-3. **`payment_records`**:
-   - `id`: UUID Primary Key
-   - `user_id`: UUID References `auth.users(id)` ON DELETE CASCADE
-   - `reference`: TEXT UNIQUE (Paystack transaction reference)
-   - `ngn_amount`: BIGINT (NGN kobo, minor units)
-   - `usd_credit_amount`: BIGINT (USD cents, minor units; CHECK `usd_credit_amount >= 1500`)
-   - `exchange_rate_used`: NUMERIC(12, 4) (NGN per USD rate)
-   - `status`: TEXT (`initialized`, `pending`, `success`, `failed`, `abandoned`)
-   - `paystack_access_code`: TEXT
-   - `authorization_url`: TEXT
-   - `metadata`: JSONB
-   - `verified_at`: TIMESTAMPTZ
-   - `created_at`, `updated_at`: TIMESTAMPTZ
-
-### Row Level Security (RLS)
-- Authenticated users are only granted `SELECT` access to rows where `auth.uid() = user_id`.
-- Direct `INSERT`, `UPDATE`, or `DELETE` requests from the client are forbidden. Balance modifications are executed exclusively through SECURITY DEFINER PostgreSQL functions (`credit_wallet`, `debit_wallet`, `credit_verified_payment`).
-
 ---
 
 ## Backend Edge Functions
 
 Located in `supabase/functions/`:
 
-1. **`get-exchange-rate`**:
-   - Returns the backend-authoritative exchange rate (default: `1550 NGN/USD`), minimum top-up requirement (`$15 USD`), and usage rate (`$0.04/s`).
-   - Prevents desktop client from forging conversion rates.
-
-2. **`initialize-payment`**:
+1. **`create-decart-token`**:
    - Authenticates caller using Supabase JWT.
-   - Enforces `$15.00 USD` minimum server-side.
-   - Calculates NGN amount in kobo using backend rate.
-   - Generates unique reference `dallr_<uid>_<timestamp>_<rand>`.
-   - Initializes transaction with Paystack API (`https://api.paystack.co/transaction/initialize`) using server-side secret key `PAYSTACK_SECRET_KEY`.
-   - Records transaction in `payment_records` table with status `initialized`.
-   - Returns checkout `authorization_url` to client.
+   - Verifies USD wallet has at least $0.04 USD.
+   - Mints a short-lived Decart client token scoped to `lucy-2.5`.
 
-3. **`paystack-webhook`**:
-   - Receives Paystack webhook events.
-   - Validates `x-paystack-signature` HMAC-SHA512 header with `PAYSTACK_SECRET_KEY`.
-   - On `charge.success`: Independently calls Paystack API (`https://api.paystack.co/transaction/verify/:ref`) to confirm amount and payment status.
-   - Invokes `credit_verified_payment` stored procedure to atomically and idempotently credit the user's USD wallet.
-   - Records failed or abandoned events without crediting.
+2. **`get-exchange-rate`**:
+   - Returns the backend-authoritative exchange rate (default: `1550 NGN/USD`), minimum top-up requirement (`$15 USD`), and usage rate (`$0.04/s`).
 
-4. **`verify-payment`**:
-   - Authenticated endpoint for the desktop application to check transaction status.
-   - Queries Paystack API directly and synchronizes payment record and wallet balance.
+3. **`initialize-payment`**:
+   - Authenticates caller and initializes Paystack transaction.
+
+4. **`paystack-webhook`**:
+   - Validates HMAC-SHA512 webhook signature and credits verified transactions.
+
+5. **`verify-payment`**:
+   - Synchronizes payment status directly with Paystack API.
 
 ---
 
@@ -109,6 +115,7 @@ cp .env.example .env
 | `VITE_SUPABASE_ANON_KEY` | Client (Vite) | Supabase public anonymous API key |
 | `VITE_APP_NAME` | Client (Vite) | Application name (default: `Dallr Cam`) |
 | `VITE_APP_ENV` | Client (Vite) | Environment mode (`development` / `production`) |
+| `DECART_API_KEY` | Backend (Edge Functions) | Decart Secret API Key (`dct_...`) |
 | `PAYSTACK_SECRET_KEY` | Backend (Edge Functions) | Paystack Secret Key (`sk_live_...` or `sk_test_...`) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Backend (Edge Functions) | Supabase admin secret key for database operations |
 | `PAYSTACK_USD_TO_NGN_RATE` | Backend (Edge Functions) | Authoritative USD to NGN exchange rate (default: `1550`) |
@@ -130,9 +137,4 @@ npm run build
 ### Lint codebase
 ```bash
 npm run lint
-```
-
-### Tauri desktop check
-```bash
-cargo check --manifest-path src-tauri/Cargo.toml
 ```
