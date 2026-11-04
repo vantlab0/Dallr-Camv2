@@ -3,6 +3,7 @@
 // Enforces minimum $15 top-up server-side, calculates NGN in kobo using trusted rate,
 // generates unique payment reference, records transaction in payment_records,
 // and contacts Paystack API with secret key.
+// All mock fallbacks are strictly prohibited.
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
@@ -27,6 +28,29 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
     const paystackSecretKey = Deno.env.get('PAYSTACK_SECRET_KEY') || ''
     const exchangeRate = Number(Deno.env.get('PAYSTACK_USD_TO_NGN_RATE') || '1550')
+
+    // Missing Paystack or Supabase credentials must cause immediate secure failure
+    if (!paystackSecretKey) {
+      console.error('PAYSTACK_SECRET_KEY environment variable is not configured')
+      return new Response(
+        JSON.stringify({ error: 'Payment gateway configuration error' }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      )
+    }
+
+    if (!supabaseUrl || !supabaseServiceKey) {
+      console.error('Supabase server credentials are not configured')
+      return new Response(
+        JSON.stringify({ error: 'Server configuration error' }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      )
+    }
 
     // 1. Authenticate user from Bearer JWT
     const authHeader = req.headers.get('Authorization')
@@ -72,54 +96,46 @@ serve(async (req) => {
     // NGN amount in full NGN = amountUSD * exchangeRate
     // NGN amount in kobo = Math.round(amountUSD * exchangeRate * 100)
     const ngnKobo = Math.round(amountUSD * exchangeRate * 100)
-    const uniqueRef = `dallr_${user.id.substring(0, 8)}_${Date.now()}_${Math.floor(Math.random() * 10000)}`
+    const uniqueRef = `dallr_${user.id.substring(0, 8)}_${Date.now()}_${crypto.randomUUID().substring(0, 8)}`
 
-    let authorizationUrl = ''
-    let accessCode = ''
-
-    // 3. Initialize Paystack transaction if secret key is present
-    if (paystackSecretKey) {
-      const paystackRes = await fetch('https://api.paystack.co/transaction/initialize', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${paystackSecretKey}`,
-          'Content-Type': 'application/json',
+    // 3. Initialize Paystack transaction strictly against official API
+    const paystackRes = await fetch('https://api.paystack.co/transaction/initialize', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${paystackSecretKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: user.email,
+        amount: ngnKobo,
+        reference: uniqueRef,
+        currency: 'NGN',
+        callback_url: body.callback_url || undefined,
+        metadata: {
+          user_id: user.id,
+          usd_credit_amount_cents: usdCents,
+          exchange_rate_used: exchangeRate,
+          app: 'Dallr Cam',
         },
-        body: JSON.stringify({
-          email: user.email,
-          amount: ngnKobo,
-          reference: uniqueRef,
-          currency: 'NGN',
-          callback_url: body.callback_url || undefined,
-          metadata: {
-            user_id: user.id,
-            usd_credit_amount_cents: usdCents,
-            exchange_rate_used: exchangeRate,
-            app: 'Dallr Cam',
-          },
+      }),
+    })
+
+    const paystackData = await paystackRes.json()
+    if (!paystackRes.ok || !paystackData.status) {
+      console.error('Paystack initialization failure:', paystackData)
+      return new Response(
+        JSON.stringify({
+          error: paystackData.message || 'Failed to initialize Paystack payment',
         }),
-      })
-
-      const paystackData = await paystackRes.json()
-      if (!paystackRes.ok || !paystackData.status) {
-        return new Response(
-          JSON.stringify({
-            error: paystackData.message || 'Failed to initialize Paystack payment',
-          }),
-          {
-            status: 502,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          }
-        )
-      }
-
-      authorizationUrl = paystackData.data.authorization_url
-      accessCode = paystackData.data.access_code
-    } else {
-      // Mock gateway URL for testing environments without live keys
-      authorizationUrl = `https://checkout.paystack.com/mock_${uniqueRef}`
-      accessCode = `mock_code_${uniqueRef}`
+        {
+          status: 502,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      )
     }
+
+    const authorizationUrl = paystackData.data.authorization_url
+    const accessCode = paystackData.data.access_code
 
     // 4. Record payment record with status 'initialized'
     const { error: insertError } = await supabaseAdmin.from('payment_records').insert({
@@ -138,6 +154,7 @@ serve(async (req) => {
     })
 
     if (insertError) {
+      console.error('Error inserting payment record:', insertError)
       return new Response(
         JSON.stringify({ error: `Failed to create payment record: ${insertError.message}` }),
         {
@@ -162,6 +179,7 @@ serve(async (req) => {
       }
     )
   } catch (error) {
+    console.error('Unexpected error in initialize-payment:', error)
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : 'Internal Server Error' }),
       {
