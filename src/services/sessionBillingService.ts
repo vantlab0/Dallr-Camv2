@@ -1,18 +1,13 @@
 /**
  * Session Billing Service
  *
- * Implements authoritative backend-controlled usage metering for Dallr Cam.
- * - Rate: $0.04 per second (4 cents / second).
- * - Billing begins only when Decart session is confirmed active and generating.
- * - Cumulative usage accounting: client reports monotonic cumulative seconds,
- *   preventing small-interval rounding errors and double debits.
- * - Metering heartbeat cadence: 5 seconds (balances rapid balance exhaustion protection
- *   with minimal network and database pressure).
- * - Insufficient balance detection:
- *   - Warning when balance < 30 seconds ($1.20 USD).
- *   - Critical warning when balance < 10 seconds ($0.40 USD).
- *   - Auto-stops session immediately when balance is exhausted (stop_requested).
- * - Lifecycle triggers:
+ * Implements server-authoritative live session usage metering:
+ * - Sends periodic heartbeats with cumulative elapsed seconds every 5s.
+ * - Receives authoritative wallet debits ($0.04 USD / sec) from backend Edge Function.
+ * - Emits warnings at < 30s ($1.20) and < 10s ($0.40).
+ * - Enforces immediate teardown if balance is exhausted.
+ * - Tracks consecutive heartbeat failures and halts stream if heartbeats fail repeatedly.
+ * - Idempotently ends session on:
  *   - User manual end call.
  *   - Output window closure.
  *   - App exit / page beforeunload.
@@ -58,6 +53,9 @@ export class SessionBillingService {
   private criticalBalanceWarning: boolean = false
   private exhausted: boolean = false
   private error: string | null = null
+
+  private consecutiveHeartbeatFailures: number = 0
+  private readonly MAX_CONSECUTIVE_FAILURES: number = 3
 
   private heartbeatIntervalTimer: ReturnType<typeof setInterval> | null = null
   private listeners: SessionBillingListeners = {}
@@ -117,6 +115,7 @@ export class SessionBillingService {
     this.lowBalanceWarning = false
     this.criticalBalanceWarning = false
     this.exhausted = false
+    this.consecutiveHeartbeatFailures = 0
     this.decartSessionId = decartSessionId || null
     this.emitState()
 
@@ -203,6 +202,7 @@ export class SessionBillingService {
 
   /**
    * Sends cumulative usage to authoritative backend.
+   * Halts stream if heartbeats fail beyond bounded threshold.
    */
   public async sendHeartbeat(): Promise<void> {
     if (!this.isActive || !this.sessionId) return
@@ -227,32 +227,46 @@ export class SessionBillingService {
       })
 
       if (error) {
-        console.warn('Billing heartbeat warning:', error.message)
+        this.consecutiveHeartbeatFailures += 1
+        console.warn(`Billing heartbeat warning (${this.consecutiveHeartbeatFailures}/${this.MAX_CONSECUTIVE_FAILURES}):`, error.message)
+        if (this.consecutiveHeartbeatFailures >= this.MAX_CONSECUTIVE_FAILURES) {
+          this.handleHeartbeatExhaustedOrFailed('Billing heartbeat communication lost with server.')
+        }
         return
       }
 
       if (data?.success) {
+        this.consecutiveHeartbeatFailures = 0
         this.billedCents = data.billed_cents ?? this.billedCents
         this.currentBalanceCents = data.new_balance_cents ?? this.currentBalanceCents
 
         this.checkBalanceThresholds(this.currentBalanceCents)
 
         if (data.stop_requested || data.status === 'terminated_insufficient_funds') {
-          this.exhausted = true
-          this.isActive = false
-          this.stopHeartbeatLoop()
-          this.emitState()
-          this.listeners.onInsufficientFundsTerminated?.(
-            this.cumulativeSeconds,
-            Number((this.billedCents / 100).toFixed(2))
-          )
+          this.handleHeartbeatExhaustedOrFailed('Balance exhausted')
         } else {
           this.emitState()
         }
       }
     } catch (err) {
-      console.warn('Billing heartbeat network failure:', err)
+      this.consecutiveHeartbeatFailures += 1
+      console.warn(`Billing heartbeat network failure (${this.consecutiveHeartbeatFailures}/${this.MAX_CONSECUTIVE_FAILURES}):`, err)
+      if (this.consecutiveHeartbeatFailures >= this.MAX_CONSECUTIVE_FAILURES) {
+        this.handleHeartbeatExhaustedOrFailed('Billing heartbeat network communication lost.')
+      }
     }
+  }
+
+  private handleHeartbeatExhaustedOrFailed(reason: string) {
+    this.exhausted = true
+    this.isActive = false
+    this.stopHeartbeatLoop()
+    this.error = reason
+    this.emitState()
+    this.listeners.onInsufficientFundsTerminated?.(
+      this.cumulativeSeconds,
+      Number((this.billedCents / 100).toFixed(2))
+    )
   }
 
   /**
@@ -333,6 +347,7 @@ export class SessionBillingService {
       this.lowBalanceWarning = false
       this.criticalBalanceWarning = false
       this.exhausted = false
+      this.consecutiveHeartbeatFailures = 0
       this.emitState()
     }
 

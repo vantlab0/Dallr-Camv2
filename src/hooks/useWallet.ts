@@ -65,8 +65,50 @@ export function useWallet(options?: UseWalletOptions) {
   }, [userId])
 
   useEffect(() => {
-    void loadWalletData()
-  }, [loadWalletData])
+    let isMounted = true
+    const run = async () => {
+      try {
+        setIsLoading(true)
+        setError(null)
+
+        const [rateConfig, userWallet] = await Promise.all([
+          walletService.getExchangeRateConfig(),
+          userId ? walletService.getWallet(userId) : Promise.resolve(null),
+        ])
+
+        if (!isMounted) return
+
+        if (rateConfig) {
+          setExchangeRateUSDToNGN(rateConfig.usd_to_ngn_rate)
+          setMinimumTopUpUSD(rateConfig.minimum_top_up_usd)
+        }
+
+        if (userWallet) {
+          setBalanceCents(userWallet.balance)
+          setBalanceUSD(userWallet.balance / 100)
+        } else if (userId) {
+          setBalanceCents(0)
+          setBalanceUSD(0)
+        }
+
+        if (userId) {
+          const txs = await walletService.getTransactions(userId, 20)
+          if (isMounted) setTransactions(txs)
+        }
+      } catch (err: unknown) {
+        if (!isMounted) return
+        const message = err instanceof Error ? err.message : 'Failed to load wallet data'
+        console.error('Wallet data error:', message)
+        setError(message)
+      } finally {
+        if (isMounted) setIsLoading(false)
+      }
+    }
+    void run()
+    return () => {
+      isMounted = false
+    }
+  }, [userId])
 
   // 2. Supabase Realtime Subscription: auto-updates balance & transactions
   useEffect(() => {
