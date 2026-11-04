@@ -5,6 +5,10 @@ import { QuickActionCard } from '@/components/dashboard/QuickActionCard'
 import { TopUpModal } from '@/components/wallet/TopUpModal'
 import { TransactionHistory } from '@/components/wallet/TransactionHistory'
 import { LiveSetupModal } from '@/components/live/LiveSetupModal'
+import { CompactLiveStatus } from '@/components/live/CompactLiveStatus'
+import { decartStreamService } from '@/services/decartStreamService'
+import { videoWindowManager } from '@/services/videoWindowManager'
+import { streamRelayService } from '@/services/streamRelayService'
 import { useWallet } from '@/hooks/useWallet'
 import { Layers, ShieldCheck, Zap } from 'lucide-react'
 
@@ -39,6 +43,78 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   const [isTopUpOpen, setIsTopUpOpen] = useState(false)
   const [isLiveSetupOpen, setIsLiveSetupOpen] = useState(false)
 
+  // Live session status tracking for dashboard
+  const [isStreamActive, setIsStreamActive] = useState<boolean>(false)
+  const [isConnected, setIsConnected] = useState<boolean>(false)
+  const [isEnding, setIsEnding] = useState<boolean>(false)
+  const [elapsedSeconds, setElapsedSeconds] = useState<number>(0)
+  const [isOutputWindowOpen, setIsOutputWindowOpen] = useState<boolean>(false)
+
+  const checkOutputWindow = React.useCallback(async () => {
+    const open = await videoWindowManager.isWindowOpen()
+    setIsOutputWindowOpen(open)
+  }, [])
+
+  React.useEffect(() => {
+    decartStreamService.setListeners({
+      onStateChange: (state) => {
+        setIsConnected(state === 'connected')
+        setIsStreamActive(state === 'connected' || state === 'connecting' || state === 'reconnecting')
+        setIsEnding(state === 'ending')
+        if (state === 'ended' || state === 'failed') {
+          setIsStreamActive(false)
+          setIsConnected(false)
+          setIsEnding(false)
+          setElapsedSeconds(0)
+          void refreshWallet()
+        }
+      },
+      onGenerationTick: (tick) => {
+        setElapsedSeconds(tick.seconds)
+      },
+    })
+
+    const interval = setInterval(() => {
+      void checkOutputWindow()
+    }, 1000)
+
+    return () => {
+      clearInterval(interval)
+    }
+  }, [checkOutputWindow, refreshWallet])
+
+  const handleEndLiveSession = async () => {
+    setIsEnding(true)
+    try {
+      streamRelayService.notifySessionEnded()
+      await videoWindowManager.closeVideoWindow()
+      await decartStreamService.endLiveStream()
+    } finally {
+      setIsStreamActive(false)
+      setIsEnding(false)
+      setIsOutputWindowOpen(false)
+      setElapsedSeconds(0)
+      void refreshWallet()
+    }
+  }
+
+  const handleReopenOutputWindow = async () => {
+    await videoWindowManager.openVideoWindow({
+      onClose: () => {
+        void handleEndLiveSession()
+      },
+    })
+    setIsOutputWindowOpen(true)
+    const remoteStream = decartStreamService.getRemoteStream()
+    if (remoteStream) {
+      streamRelayService.startBroadcasting(remoteStream)
+    }
+  }
+
+  const handleFocusOutputWindow = async () => {
+    await videoWindowManager.focusVideoWindow()
+  }
+
   return (
     <DashboardLayout
       userEmail={userEmail}
@@ -63,6 +139,20 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             </div>
           </div>
         </div>
+
+        {/* COMPACT LIVE STATUS BAR (Visible when streaming) */}
+        {isStreamActive && (
+          <CompactLiveStatus
+            isConnected={isConnected}
+            isEnding={isEnding}
+            elapsedSeconds={elapsedSeconds}
+            balanceUSD={balanceUSD}
+            isOutputWindowOpen={isOutputWindowOpen}
+            onReopenOutputWindow={handleReopenOutputWindow}
+            onFocusOutputWindow={handleFocusOutputWindow}
+            onEndSession={handleEndLiveSession}
+          />
+        )}
 
         {/* Main Grid: Balance Card & Quick Action Card */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
