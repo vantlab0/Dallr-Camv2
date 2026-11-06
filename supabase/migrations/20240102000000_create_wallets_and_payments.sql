@@ -17,6 +17,36 @@ CREATE TABLE IF NOT EXISTS public.wallets (
   CONSTRAINT wallets_balance_non_negative CHECK (balance >= 0)
 );
 
+-- Defensive: add missing columns to pre-existing wallets table
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'wallets' AND column_name = 'currency'
+  ) THEN
+    ALTER TABLE public.wallets ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'wallets' AND column_name = 'balance'
+  ) THEN
+    ALTER TABLE public.wallets ADD COLUMN balance BIGINT NOT NULL DEFAULT 0;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'wallets' AND column_name = 'created_at'
+  ) THEN
+    ALTER TABLE public.wallets ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now());
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'wallets' AND column_name = 'updated_at'
+  ) THEN
+    ALTER TABLE public.wallets ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now());
+  END IF;
+END;
+$$;
+
 CREATE INDEX IF NOT EXISTS idx_wallets_user_id ON public.wallets(user_id);
 
 -- Table 2: wallet_transactions
@@ -41,6 +71,20 @@ CREATE TABLE IF NOT EXISTS public.wallet_transactions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_wallet_transactions_user_id ON public.wallet_transactions(user_id);
+
+-- Defensive: add wallet_id column if the table was created without it (pre-existing schema)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'wallet_transactions' AND column_name = 'wallet_id'
+  ) THEN
+    ALTER TABLE public.wallet_transactions
+      ADD COLUMN wallet_id UUID;
+  END IF;
+END;
+$$;
+
 CREATE INDEX IF NOT EXISTS idx_wallet_transactions_wallet_id ON public.wallet_transactions(wallet_id);
 CREATE INDEX IF NOT EXISTS idx_wallet_transactions_created_at ON public.wallet_transactions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_wallet_transactions_reference ON public.wallet_transactions(reference);
