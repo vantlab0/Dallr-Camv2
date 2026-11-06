@@ -226,19 +226,22 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
       setIsStreaming(true)
       setStreamError(null)
 
+      // Open borderless video window FIRST so it displays the reference image immediately
+      // while we connect to the Decart server in the background.
+      await videoWindowManager.openVideoWindow({
+        referenceImageDataUrl: preparedImage.dataUrl,
+        onClose: () => {
+          void handleEndLiveStream()
+        },
+      })
+
+      // Then connect to Decart Lucy 2.5 and start streaming
       const session = await decartStreamService.startLiveStream({
         referenceImage: preparedImage,
         prompt,
         ratePerSecondUSD: prep.ratePerSecondUSD ?? 0.04,
       })
       setStreamSessionInfo(session)
-
-      // Automatically open borderless native video window
-      await videoWindowManager.openVideoWindow({
-        onClose: () => {
-          void handleEndLiveStream()
-        },
-      })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to connect to Decart Lucy 2.5 stream.'
       setStreamError(msg)

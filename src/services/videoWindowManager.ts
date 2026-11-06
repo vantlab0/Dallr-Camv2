@@ -19,6 +19,8 @@ export interface VideoWindowOptions {
   width?: number
   height?: number
   onClose?: () => void
+  // Reference image data URL to display in the borderless window before the Decart stream connects
+  referenceImageDataUrl?: string
 }
 
 export class VideoWindowManager {
@@ -71,10 +73,17 @@ export class VideoWindowManager {
    * If already open, brings it to focus.
    */
   public async openVideoWindow(options: VideoWindowOptions = {}): Promise<void> {
-    const { width = 1280, height = 720, onClose } = options
+    const { width = 1280, height = 720, onClose, referenceImageDataUrl } = options
     if (onClose) {
       this.closeCallback = onClose
     }
+
+    // Build the video output URL with optional reference image param
+    const urlParams = new URLSearchParams({ view: 'video-output' })
+    if (referenceImageDataUrl) {
+      urlParams.set('image', referenceImageDataUrl)
+    }
+    const videoOutputUrl = `/?${urlParams.toString()}`
 
     if (this.detectEnvironment()) {
       try {
@@ -90,7 +99,7 @@ export class VideoWindowManager {
 
         // Create new borderless native desktop window
         const videoWin = new WebviewWindow(VIDEO_OUTPUT_WINDOW_LABEL, {
-          url: VIDEO_OUTPUT_ROUTE,
+          url: videoOutputUrl,
           title: 'Dallr Cam — Video Output',
           width,
           height,
@@ -120,14 +129,14 @@ export class VideoWindowManager {
       } catch (err) {
         console.error('Error opening Tauri video output window:', err)
         // Fallback to web popup if Tauri API fails
-        this.openWebFallback(width, height)
+        this.openWebFallback(videoOutputUrl, width, height)
       }
     } else {
-      this.openWebFallback(width, height)
+      this.openWebFallback(videoOutputUrl, width, height)
     }
   }
 
-  private openWebFallback(width: number, height: number) {
+  private openWebFallback(url: string, width: number, height: number) {
     if (this.popupWindowRef && !this.popupWindowRef.closed) {
       this.popupWindowRef.focus()
       return
@@ -137,7 +146,7 @@ export class VideoWindowManager {
     const top = Math.max(0, Math.round((window.screen.height - height) / 2))
 
     const popup = window.open(
-      VIDEO_OUTPUT_ROUTE,
+      url,
       VIDEO_OUTPUT_WINDOW_LABEL,
       `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes`
     )

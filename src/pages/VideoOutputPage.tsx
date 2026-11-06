@@ -12,15 +12,28 @@ import { streamRelayService } from '@/services/streamRelayService'
  * - No visible application controls.
  * - No unnecessary padding.
  * - No dashboard elements.
- * - Black background while video initializes and renders.
+ * - Shows the reference image while waiting for the Decart stream to connect.
+ * - Black background during initialization and renders.
  * - Correct aspect ratio, responsive resizing, smooth rendering, object-contain.
  * - When closed or unmounted, requests session termination.
  */
 export const VideoOutputPage: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [stream, setStream] = useState<MediaStream | null>(null)
+  const [referenceImageUrl, setReferenceImageUrl] = useState<string | null>(null)
 
   useEffect(() => {
+    // Read reference image data URL from query params (passed by the main window)
+    const urlParams = new URLSearchParams(window.location.search)
+    const imageParam = urlParams.get('image')
+    if (imageParam) {
+      try {
+        setReferenceImageUrl(decodeURIComponent(imageParam))
+      } catch {
+        setReferenceImageUrl(imageParam)
+      }
+    }
+
     // Connect to cross-window relay as receiver
     streamRelayService.onRemoteStream((remoteStream) => {
       setStream(remoteStream)
@@ -67,6 +80,20 @@ export const VideoOutputPage: React.FC = () => {
       className="fixed inset-0 w-screen h-screen bg-black overflow-hidden flex items-center justify-center m-0 p-0 select-none border-none outline-none"
       style={{ margin: 0, padding: 0, backgroundColor: '#000000' }}
     >
+      {/* Reference image shown before the Decart stream connects */}
+      {referenceImageUrl && !stream && (
+        <img
+          src={referenceImageUrl}
+          alt="Reference image"
+          className="w-full h-full object-contain opacity-100"
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+            backgroundColor: '#000000',
+          }}
+        />
+      )}
       <video
         ref={videoRef}
         data-testid="video-output-player"
