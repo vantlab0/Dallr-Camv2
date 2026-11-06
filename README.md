@@ -1,194 +1,72 @@
-# Dallr Cam — Desktop Video Calling Studio
+# Dallr Cam
 
-Dallr Cam is a desktop studio application built with **Tauri 2**, **React 19**, **TypeScript**, **Vite**, and **Tailwind CSS**. It enables operators to broadcast real-time video calls with balance management and WebRTC streaming.
+**Turn your webcam into a virtual camera you can use anywhere.**
 
----
-
-## Phase 7: Real-Time Session Billing, Security & Production Readiness
-
-Phase 7 delivers authoritative backend-controlled session metering, cumulative integer arithmetic billing, low and critical balance notifications, automatic fund-exhaustion teardown, and production desktop builds for Windows and macOS.
-
-### 1. Authoritative Session Metering & Business Rules
-- **Wallet Currency**: United States Dollar (`USD`)
-- **Payment Currency**: Nigerian Naira (`NGN`) via Paystack checkout
-- **Minimum Top-Up**: **$15.00 USD** equivalent (strictly enforced)
-- **Billing Rate**: **$0.04 USD per second** (4 cents / billable second)
-  - 60 seconds = $2.40 USD (240 cents)
-  - 120 seconds = $4.80 USD (480 cents)
-  - 300 seconds = $12.00 USD (1200 cents)
-  - 375 seconds = $15.00 USD (1500 cents)
-- **Activation Gate**: Usage metering initiates only once Decart Lucy 2.5 confirms an active generating WebRTC stream.
-- **Heartbeat Cadence**: 5 seconds cumulative usage reporting via `sessionBillingService` and `session-heartbeat` Edge Function.
-- **Balance Warnings**:
-  - Low balance warning when balance covers `< 30s` ($1.20 USD).
-  - Critical balance warning when balance covers `< 10s` ($0.40 USD).
-  - Automatic stream termination and window closure when funds are exhausted.
-
-### 2. Database Migrations & Tables
-- `supabase/migrations/20240101000000_create_profiles.sql`: User profiles and signup triggers.
-- `supabase/migrations/20240102000000_create_wallets_and_payments.sql`: Wallets, transactions, Paystack records, and RLS.
-- `supabase/migrations/20240103000000_create_live_sessions_and_billing.sql`: `live_sessions` table, `start_live_session`, `heartbeat_and_meter_session`, `end_live_session`, and `reconcile_stale_sessions` stored procedures.
-- `supabase/migrations/20240104000000_harden_security_and_billing.sql`: Security definer path isolation, caller ownership, and billing hardening.
-- `supabase/migrations/20240105000000_secure_paystack_payments.sql`: FOR UPDATE row-locking on payment verification and service_role security.
-- `supabase/migrations/20240106000000_server_authoritative_billing.sql`: Server timestamp metering, 15s lease bounding, and dropping obsolete billing RPC signatures.
-- `supabase/migrations/20240106010000_stale_session_reconciliation_scheduler.sql`: Fail-loud pg_cron scheduler registration with duplicate-job guard and `verify_reconciliation_scheduler()`.
-- `supabase/migrations/20240107000000_prevent_duplicate_live_sessions.sql`: Partial unique index on active sessions and idempotent start_live_session.
-- `supabase/migrations/20240108000000_authoritative_billing_state_and_payment_integrity.sql`: Explicit server-authoritative `billing_state` (`idle`/`billable`/`paused`/`ended`), `set_session_billing_state()`, hardened `credit_verified_payment` with mandatory verified amount + currency, partial unique top-up reference index, and payment reconciliation index.
-
-### 3. Comprehensive Documentation
-- See [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md) for full system architecture, database schema, API contracts, security review, known limitations, and Windows/macOS native build instructions.
+Dallr Cam is a desktop app that lets you transform your live webcam video into realistic, stylized versions of yourself in real time. Share that video directly into Zoom, Google Meet, Discord, OBS, Teams, or any other app that uses a camera feed — no complicated setup required.
 
 ---
 
-## Phase 5: Decart Lucy 2.5 Real-Time Video Transformation
+## What it does
 
-Phase 5 integrates the official `@decartai/sdk` and establishes a real-time WebRTC transformation session utilizing the **Decart Lucy 2.5** model (`lucy-2.5`).
+Dallr Cam captures your webcam, runs it through a real-time video transformation model, and broadcasts the result as a virtual camera source. You see yourself on screen — but looking however you want to look.
 
-### 1. Decart SDK & Model Specifications
-- **SDK Package**: `@decartai/sdk` (v0.2.14+)
-- **Model Identifier**: `lucy-2.5` (`models.realtime("lucy-2.5")`)
-- **Native Resolution**: 1280×720 (720p) at 30 fps
-- **Transport**: WebRTC
-- **Reference Image**: Supported formats: PNG, JPG, JPEG, WebP. Kept in memory (decoded base64 dataUrl / Blob) without cloud upload.
-- **Prompt Enhancement**: Enabled by default (`enhance: true`) to adapt instructions to camera feeds and reference images.
-- **Dynamic Updates**: Uses unified atomic `set({ prompt, image, enhance: true })` or `setPrompt()` to modify styles without dropping the WebRTC connection.
+### The core experience
 
-### 2. Secure Backend Architecture
-- **Permanent Secret Isolation**: The permanent secret key (`DECART_API_KEY`) is stored strictly on the backend / Supabase Edge Functions. It is never bundled into or accessible by the client desktop app.
-- **Short-Lived Client Tokens**: Tokens are generated on the server with a configurable TTL (default 300s / 5 minutes), scoped strictly to `allowedModels: ["lucy-2.5"]`.
-- **Pre-flight Wallet Verification**: Before minting a client token, the backend authenticates the user's Supabase JWT and checks that the user's USD wallet holds at least $0.04 USD (4 cents, representing at least 1 second of live streaming at $0.04/sec).
-- **Backend Function**: `supabase/functions/create-decart-token/index.ts`
-  - Validates `Authorization: Bearer <jwt>`.
-  - Verifies USD wallet balance `>= 4` cents.
-  - Calls Decart `client.tokens.create({ expiresIn: 300, allowedModels: ["lucy-2.5"] })`.
-  - Returns `{ apiKey, expiresAt, permissions, constraints }`.
-
-### 3. Stream Architecture & Multi-Window Readiness (Phase 6)
-- **Service Layer**: `src/services/decartStreamService.ts` implements a modular singleton managing the WebRTC connection, camera tracks, event callbacks, and cleanup.
-- **Shared Stream State**: Exposes `sessionId`, `subscribeToken`, `localStream`, and `remoteStream`.
-- **Stream Sharing for Phase 6**: Other Tauri windows can subscribe to active sessions via `client.realtime.subscribe({ token: subscribeToken })` without duplicating camera hardware locks or opening redundant upstream encoder connections.
-- **Lifecycle States**:
-  - `idle`: Camera and WebRTC idle.
-  - `preparing`: Pre-flight eligibility validated and camera media stream acquired.
-  - `connecting`: WebRTC peer connection dialing Decart signaling.
-  - `connected`: Active live stream transforming frames in real-time.
-  - `reconnecting`: Automatic exponential-backoff retry on network interruption.
-  - `failed`: Terminal failure or credential rejection.
-  - `ending`: Teardown initiated.
-  - `ended`: Resources cleanly released.
-
-### 4. UI Components
-- **`LiveStreamView.tsx`**:
-  - Displays primary transformed Decart WebRTC remote stream.
-  - Displays picture-in-picture local camera preview and reference portrait.
-  - Live session header with pulsating "LIVE" indicator, model tag ("Decart Lucy 2.5 (720p)"), connection status badge, live duration timer, and real-time USD billing counter ($0.04/sec).
-  - Dynamic prompt input bar to update prompts on the fly via `updatePrompt`.
-  - Actionable error banner with dismiss and auto-recovery.
-  - "End Stream" button for graceful teardown.
-- **`LiveSetupModal.tsx`**:
-  - Manages portrait selection, validation, and pre-flight checks.
-  - Transitions into live streaming mode upon user initiating live stream.
+1. **Pick a reference photo** — Choose an image of the look or style you want.
+2. **Start your stream** — The app activates your camera and begins transforming the video live.
+3. **Share anywhere** — Select "Dallr Cam" as your camera in your favorite video app. Everyone on the call sees your transformed video.
 
 ---
 
-## Phase 3: Real Wallet & Paystack Payment Infrastructure
+## Key features
 
-Phase 3 introduces production-ready USD wallet accounting, Paystack NGN checkout integration, backend-controlled exchange rates, and idempotent webhook verification.
-
-### Business Rules
-- **Wallet Currency**: USD
-- **Payment Currency**: NGN
-- **Minimum Top-Up**: $15.00 USD equivalent (enforced on both client and server)
-- **Live Video Usage Rate**: $0.04 USD per second
-- **Monetary Representation**: Integer minor units (USD cents: `$15.00` = `1500`, NGN kobo: `100 kobo` = `1 NGN`) to prevent floating-point calculation drift.
-- **Client Security**: Desktop client cannot directly update wallet balances. All credits and debits occur through backend functions and PostgreSQL stored procedures (`credit_wallet`, `debit_wallet`, `credit_verified_payment`).
-- **Idempotency**: Webhook verification verifies transaction status and credits each Paystack reference exactly once. Duplicate or delayed events are safely ignored.
+- **Real-time video transformation** — Powered by Decart Lucy 2.5, the app processes your webcam feed at 720p, 30 frames per second.
+- **Custom reference images** — Upload a photo to guide how you want to appear. The app keeps it in memory only; nothing is permanently stored in the cloud.
+- **Live prompts** — Change the style or look on the fly while streaming, without restarting your call.
+- **Built-in wallet** — Top up your account balance to pay for streaming time at a simple, per-second rate. You always see exactly how much you've spent and how much time remains.
+- **Balance alerts** — Get notified when your balance is running low, and the stream ends gracefully if funds are exhausted so you're never surprised by a charge.
+- **Works with your favorite apps** — Use the transformed feed in Zoom, Meet, Discord, Teams, OBS, and more.
 
 ---
 
-## Database Architecture & Migrations
+## Who is this for
 
-Database migration files are located under `supabase/migrations/`:
-- `20240101000000_create_profiles.sql` (Phase 2 Auth & Profiles)
-- `20240102000000_create_wallets_and_payments.sql` (Phase 3 Wallets & Payments)
-
----
-
-## Backend Edge Functions
-
-Located in `supabase/functions/`:
-
-1. **`create-decart-token`**:
-   - Authenticates caller using Supabase JWT.
-   - Verifies USD wallet has at least $0.04 USD.
-   - Mints a short-lived Decart client token scoped to `lucy-2.5`.
-
-2. **`get-exchange-rate`**:
-   - Returns the backend-authoritative exchange rate (default: `1550 NGN/USD`), minimum top-up requirement (`$15 USD`), and usage rate (`$0.04/s`).
-
-3. **`initialize-payment`**:
-   - Authenticates caller, inserts a tracked `payment_records` row FIRST, then initializes Paystack. Gateway details are persisted with retries; a successful gateway init can never leave an untracked payment (recoverable by `reconcile-payments`).
-
-4. **`session-heartbeat`**:
-   - Authenticates caller via Supabase JWT.
-   - Authoritative metering: charges only while server-side `billing_state` is `billable`; paused/reconnecting/idle sessions are never charged.
-   - Exposes explicit `billing_state` transitions (`billable` / `paused` / `idle`) and returns authoritative balance and `stop_requested`.
-
-5. **`paystack-webhook`**:
-   - Validates HMAC-SHA512 webhook signature (strict, JWT verification disabled via `supabase/config.toml`), independently verifies amount/currency/reference with Paystack API, and credits verified transactions idempotently.
-
-6. **`verify-payment`**:
-   - Synchronizes payment status directly with Paystack API; server-side amount, currency, status, and ownership checks before crediting.
-
-7. **`reconcile-payments`**:
-   - Scheduled recovery worker (machine-to-machine, `x-reconcile-secret` authenticated, JWT verification disabled). Recovers Paystack payments left in `initialized`/`pending` state after independent gateway verification.
+- Content creators and streamers who want a consistent on-camera look
+- Remote workers who want privacy or a polished appearance on calls
+- Anyone who wants to experiment with real-time AI video without installing complex software
 
 ---
 
-## Environment Variables
+## How to get started
 
-Copy `.env.example` to `.env`:
-
-```bash
-cp .env.example .env
-```
-
-| Variable | Scope | Description |
-| --- | --- | --- |
-| `VITE_SUPABASE_URL` | Client (Vite) | Supabase project URL |
-| `VITE_SUPABASE_ANON_KEY` | Client (Vite) | Supabase public anonymous API key (legacy JWT) |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` | Client (Vite) | Supabase publishable key (alternative to anon key) |
-| `VITE_APP_NAME` | Client (Vite) | Application name (default: `Dallr Cam`) |
-| `VITE_APP_ENV` | Client (Vite) | Environment mode (`development` / `production`) |
-| `DECART_API_KEY` | Backend (Edge Functions) | Decart Secret API Key (`dct_...`) |
-| `PAYSTACK_SECRET_KEY` | Backend (Edge Functions) | Paystack Secret Key (`sk_live_...` or `sk_test_...`) |
-| `SUPABASE_URL` | Backend (Edge Functions) | Supabase project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | Backend (Edge Functions) | Supabase admin secret key for database operations |
-| `SUPABASE_SECRET_KEY` | Backend (Edge Functions) | Supabase new-style secret key (`sb_secret_...`) |
-| `SUPABASE_JWKS_URL` | Backend (Edge Functions) | Supabase JWKS URL for JWT verification |
-| `PAYSTACK_USD_TO_NGN_RATE` | Backend (Edge Functions) | Authoritative USD to NGN exchange rate (default: `1550`) |
-| `RECONCILE_SHARED_SECRET` | Backend (Edge Functions) | Shared secret authenticating the scheduled `reconcile-payments` worker |
+1. **Install the app** — Download the latest version for Windows or macOS from the [releases page](https://github.com/vantlab0/Dallr-Camv2/releases).
+2. **Create an account** — Sign in with your email.
+3. **Add funds** — Top up your wallet (minimum $15) so you have streaming time available.
+4. **Choose a reference image** — Upload a photo that represents the look you want.
+5. **Start streaming** — Click "Start Stream," then select "Dallr Cam" as your camera in your video app.
 
 ---
 
-## Testing & Verification
+## Pricing
 
-### Run unit and integration tests
-```bash
-npm test
-```
+- Streaming costs **$0.04 per second** (about $2.40 per minute).
+- Minimum top-up: **$15.00**.
+- You only pay for the time you actively stream. Pausing or disconnecting stops the meter.
 
-### Type check and build frontend
-```bash
-npm run build
-```
+---
 
-### Lint codebase
-```bash
-npm run lint
-```
+## Privacy
 
-### CI
-- `.github/workflows/ci.yml`: lint, tests, production build, dependency audit, secret scan, and clean-database migration verification on every push/PR.
-- `.github/workflows/desktop.yml`: Tauri Windows/macOS builds with native permission and video-output verification.
-- `.github/workflows/reconcile-payments.yml`: scheduled (every 15 min) payment reconciliation worker invocation.
+- Your reference photos are kept in memory only during your session and are not permanently uploaded or stored.
+- Your camera feed is processed in real time and is not recorded or saved by the app.
+- Payment processing is handled securely through Paystack; the app never sees your full card details.
+
+---
+
+## Support
+
+If you run into any issues, have questions, or just want to say hello, open an issue on [GitHub](https://github.com/vantlab0/Dallr-Camv2/issues).
+
+---
+
+*Dallr Cam — real-time video, your way.*
