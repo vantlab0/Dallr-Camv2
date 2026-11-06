@@ -234,6 +234,25 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 ---
 
-## 8. Known Limitations & Recommendations
+## 8. Staging vs Production Environment Checklist (Issue 10)
+
+Before deploying to live customers, verify the following integrations against staging credentials:
+1. **Supabase Environment Isolation**:
+   - Maintain isolated projects for `staging` and `production`.
+   - Never share database URLs or `service_role` secrets between environments.
+   - Run `python3 scripts/test-database-integration.py` against staging DB before deploying migrations.
+   - Verify `pg_cron` extension is active and `reconcile-stale-live-sessions` job is scheduled.
+2. **Paystack Gateway Integration**:
+   - Verify Paystack test keys (`sk_test_...` / `pk_test_...`) in staging before enabling live secret keys (`sk_live_...`).
+   - Configure webhook URL in Paystack Dashboard pointing to Edge Function `https://<project-ref>.supabase.co/functions/v1/paystack-webhook`.
+   - Verify that webhook signature authentication succeeds with zero mock fallbacks.
+   - Test top-up initialization, checkout, and idempotency (duplicate webhook calls credit wallet only once).
+3. **Decart AI Live Transformation**:
+   - Validate Decart API credentials in staging with model `lucy-2.5`.
+   - Ensure `sessionBillingService` and `decartStreamService` strictly pause billing during non-generating or reconnecting states.
+4. **Desktop Native Verification**:
+   - Test Tauri builds on physical Windows and macOS hardware to confirm camera/microphone native permissions and borderless video output window capture in Zoom / Meet / OBS.
+
+## 9. Known Limitations & Recommendations
 1. **Virtual Camera Driver**: Dallr Cam achieves virtual camera functionality via the dedicated borderless `video-output` window shared directly into Zoom, Discord, Google Meet, or OBS Window Capture. For native direct virtual webcam device driver emulation on Windows and macOS, a signed kernel-mode driver (DirectShow on Windows / CoreMediaIO DAL Plugin on macOS) is recommended for future phases.
 2. **Offline Mode**: Decart Lucy 2.5 streaming requires active internet connectivity; offline local inference is not supported by the Lucy 2.5 cloud WebRTC architecture.

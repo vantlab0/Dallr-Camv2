@@ -98,35 +98,101 @@ serve(async (req) => {
     const ngnKobo = Math.round(amountUSD * exchangeRate * 100)
     const uniqueRef = `dallr_${user.id.substring(0, 8)}_${Date.now()}_${crypto.randomUUID().substring(0, 8)}`
 
-    // 3. Initialize Paystack transaction strictly against official API
-    const paystackRes = await fetch('https://api.paystack.co/transaction/initialize', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${paystackSecretKey}`,
-        'Content-Type': 'application/json',
+    // 3. Pre-insert payment record BEFORE contacting Paystack.
+    // This guarantees that the payment reference is tracked in our database before any
+    // external Paystack session is created, completely eliminating untracked payments.
+    const { error: insertError } = await supabaseAdmin.from('payment_records').insert({
+      user_id: user.id,
+      reference: uniqueRef,
+      ngn_amount: ngnKobo,
+      usd_credit_amount: usdCents,
+      exchange_rate_used: exchangeRate,
+      status: 'initialized',
+      metadata: {
+        user_email: user.email,
+        initiated_at: new Date().toISOString(),
+        gateway: 'paystack',
       },
-      body: JSON.stringify({
-        email: user.email,
-        amount: ngnKobo,
-        reference: uniqueRef,
-        currency: 'NGN',
-        callback_url: body.callback_url || undefined,
-        metadata: {
-          user_id: user.id,
-          usd_credit_amount_cents: usdCents,
-          exchange_rate_used: exchangeRate,
-          app: 'Dallr Cam',
-        },
-      }),
     })
 
-    const paystackData = await paystackRes.json()
-    if (!paystackRes.ok || !paystackData.status) {
-      console.error('Paystack initialization failure:', paystackData)
+    if (insertError) {
+      console.error('Database pre-insert failed for payment record:', insertError)
       return new Response(
-        JSON.stringify({
-          error: paystackData.message || 'Failed to initialize Paystack payment',
+        JSON.stringify({ error: `Failed to create payment record: ${insertError.message}` }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      )
+    }
+
+    // 4. Initialize Paystack transaction strictly against official API
+    let paystackData: any
+    try {
+      const paystackRes = await fetch('https://api.paystack.co/transaction/initialize', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${paystackSecretKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: user.email,
+          amount: ngnKobo,
+          reference: uniqueRef,
+          currency: 'NGN',
+          callback_url: body.callback_url || undefined,
+          metadata: {
+            user_id: user.id,
+            usd_credit_amount_cents: usdCents,
+            exchange_rate_used: exchangeRate,
+            app: 'Dallr Cam',
+          },
         }),
+      })
+
+      paystackData = await paystackRes.json()
+
+      if (!paystackRes.ok || !paystackData.status) {
+        console.error('Paystack initialization failure:', paystackData)
+        // Mark payment record as failed so untracked / dangling records are reconciled
+        await supabaseAdmin
+          .from('payment_records')
+          .update({
+            status: 'failed',
+            metadata: {
+              user_email: user.email,
+              failure_reason: paystackData?.message || 'Paystack initialization failed',
+              failed_at: new Date().toISOString(),
+            },
+          })
+          .eq('reference', uniqueRef)
+
+        return new Response(
+          JSON.stringify({
+            error: paystackData?.message || 'Failed to initialize Paystack payment',
+          }),
+          {
+            status: 502,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          }
+        )
+      }
+    } catch (paystackNetworkErr: any) {
+      console.error('Network exception contacting Paystack:', paystackNetworkErr)
+      await supabaseAdmin
+        .from('payment_records')
+        .update({
+          status: 'failed',
+          metadata: {
+            user_email: user.email,
+            failure_reason: paystackNetworkErr?.message || 'Paystack network unreachable',
+            failed_at: new Date().toISOString(),
+          },
+        })
+        .eq('reference', uniqueRef)
+
+      return new Response(
+        JSON.stringify({ error: 'Payment gateway communication failure' }),
         {
           status: 502,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -137,31 +203,24 @@ serve(async (req) => {
     const authorizationUrl = paystackData.data.authorization_url
     const accessCode = paystackData.data.access_code
 
-    // 4. Record payment record with status 'initialized'
-    const { error: insertError } = await supabaseAdmin.from('payment_records').insert({
-      user_id: user.id,
-      reference: uniqueRef,
-      ngn_amount: ngnKobo,
-      usd_credit_amount: usdCents,
-      exchange_rate_used: exchangeRate,
-      status: 'initialized',
-      paystack_access_code: accessCode,
-      authorization_url: authorizationUrl,
-      metadata: {
-        user_email: user.email,
-        initiated_at: new Date().toISOString(),
-      },
-    })
+    // 5. Update payment record with Paystack access code and authorization url
+    const { error: updateError } = await supabaseAdmin
+      .from('payment_records')
+      .update({
+        paystack_access_code: accessCode,
+        authorization_url: authorizationUrl,
+        metadata: {
+          user_email: user.email,
+          initiated_at: new Date().toISOString(),
+          paystack_initialized: true,
+        },
+      })
+      .eq('reference', uniqueRef)
 
-    if (insertError) {
-      console.error('Error inserting payment record:', insertError)
-      return new Response(
-        JSON.stringify({ error: `Failed to create payment record: ${insertError.message}` }),
-        {
-          status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        }
-      )
+    if (updateError) {
+      console.error('Error updating payment record with gateway credentials:', updateError)
+      // The record is already pre-inserted with the reference, so it is tracked and can still
+      // be verified or reconciled via webhook or direct verification endpoint.
     }
 
     return new Response(

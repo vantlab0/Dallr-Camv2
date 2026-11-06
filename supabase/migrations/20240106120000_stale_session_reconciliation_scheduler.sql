@@ -1,4 +1,4 @@
--- Migration: 20240106000000_stale_session_reconciliation_scheduler.sql
+-- Migration: 20240106120000_stale_session_reconciliation_scheduler.sql
 -- Automatic Stale Live Session Reconciliation & Scheduling:
 -- 1. Enables pg_cron extension if supported.
 -- 2. Creates public.reconciliation_logs audit table to log reconciliation outcomes and errors safely without secrets.
@@ -257,23 +257,34 @@ GRANT EXECUTE ON FUNCTION public.reconcile_stale_sessions() TO service_role;
 -- 4. Automatic Scheduler Registration via pg_cron
 -- Remove any pre-existing job with the same name to prevent duplicates across deployments
 DO $$
+DECLARE
+  v_job_exists BOOLEAN;
 BEGIN
-  IF EXISTS (
+  IF NOT EXISTS (
     SELECT 1 FROM pg_extension WHERE extname = 'pg_cron'
   ) THEN
-    PERFORM cron.unschedule(jobid)
-    FROM cron.job
-    WHERE jobname = 'reconcile-stale-live-sessions';
-
-    -- Schedule reconcile_stale_sessions() to execute every minute
-    PERFORM cron.schedule(
-      'reconcile-stale-live-sessions',
-      '* * * * *',
-      'SELECT public.reconcile_stale_sessions();'
-    );
+    RAISE EXCEPTION 'pg_cron extension is required but not installed/enabled.';
   END IF;
-EXCEPTION WHEN OTHERS THEN
-  -- Safe fallback if pg_cron is disabled or not present in environment
-  RAISE WARNING 'pg_cron job registration skipped: %', SQLERRM;
+
+  PERFORM cron.unschedule(jobid)
+  FROM cron.job
+  WHERE jobname = 'reconcile-stale-live-sessions';
+
+  -- Schedule reconcile_stale_sessions() to execute every minute
+  PERFORM cron.schedule(
+    'reconcile-stale-live-sessions',
+    '* * * * *',
+    'SELECT public.reconcile_stale_sessions();'
+  );
+
+  -- Explicitly verify that the job is registered and active
+  SELECT EXISTS (
+    SELECT 1 FROM cron.job
+    WHERE jobname = 'reconcile-stale-live-sessions' AND active = TRUE
+  ) INTO v_job_exists;
+
+  IF NOT v_job_exists THEN
+    RAISE EXCEPTION 'Failed to schedule reconcile-stale-live-sessions in pg_cron: job not active.';
+  END IF;
 END;
 $$;

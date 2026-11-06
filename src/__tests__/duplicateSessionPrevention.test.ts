@@ -297,6 +297,8 @@ describe('Duplicate Live Session Prevention & Idempotency', () => {
     // Simulate Decart reconnecting event
     registeredCallbacks['connectionChange']?.('reconnecting')
     expect(decartStreamService.getState()).toBe('reconnecting')
+    // Billing service should pause billable state during reconnecting
+    expect(sessionBillingService.getState().isBillable).toBe(false)
 
     // Simulate Decart re-connected event
     registeredCallbacks['connectionChange']?.('connected')

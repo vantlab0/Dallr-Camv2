@@ -201,12 +201,19 @@ export class DecartStreamService {
                 this.listeners.onError?.({ code: 'BILLING_START_FAILED', message })
                 void this.endLiveStream()
               })
+          } else if (billingState.isActive) {
+            // Resume billable state on reconnect/generating
+            sessionBillingService.setBillable(true)
           }
         } else if (state === 'reconnecting') {
           this.updateState('reconnecting')
+          // Non-generating state: pause billing heartbeats during reconnect
+          sessionBillingService.setBillable(false)
         } else if (state === 'connecting') {
           this.updateState('connecting')
+          sessionBillingService.setBillable(false)
         } else if (state === 'disconnected') {
+          sessionBillingService.setBillable(false)
           if (this.currentState !== 'ending' && this.currentState !== 'ended') {
             this.updateState('failed')
             void sessionBillingService.endSession()

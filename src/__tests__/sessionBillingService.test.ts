@@ -241,3 +241,67 @@ describe('sessionBillingService', () => {
     expect(sessionBillingService.getState().sessionId).toBeNull()
   })
 })
+
+  it('pauses and resumes billing based on explicit billable state during reconnects', async () => {
+    vi.mocked(supabase.auth.getSession).mockResolvedValue({
+      data: {
+        session: {
+          access_token: 'valid-test-token',
+        } as any,
+      },
+      error: null,
+    })
+
+    vi.mocked(supabase.functions.invoke).mockResolvedValue({
+      data: {
+        success: true,
+        session_id: 'session-billable-test',
+        current_balance_cents: 2000,
+        status: 'active',
+      },
+      error: null,
+    })
+
+    await sessionBillingService.startSession('decart-session-reconnect')
+    expect(sessionBillingService.getState().isBillable).toBe(true)
+
+    // Call onGenerationTick while billable
+    sessionBillingService.onGenerationTick(5)
+    expect(sessionBillingService.getState().cumulativeSeconds).toBe(5)
+
+    // Set non-billable (reconnecting state)
+    sessionBillingService.setBillable(false)
+    expect(sessionBillingService.getState().isBillable).toBe(false)
+
+    // Clear invoke mock to count heartbeats
+    vi.mocked(supabase.functions.invoke).mockClear()
+
+    // Send heartbeat while non-billable: must NOT invoke heartbeat API
+    await sessionBillingService.sendHeartbeat()
+    expect(supabase.functions.invoke).not.toHaveBeenCalled()
+
+    // Ticks while non-billable must be ignored
+    sessionBillingService.onGenerationTick(10)
+    expect(sessionBillingService.getState().cumulativeSeconds).toBe(5)
+
+    // Resume billable state (stream reconnected)
+    sessionBillingService.setBillable(true)
+    expect(sessionBillingService.getState().isBillable).toBe(true)
+
+    vi.mocked(supabase.functions.invoke).mockResolvedValue({
+      data: {
+        success: true,
+        cumulative_seconds: 5,
+        billed_cents: 20,
+        new_balance_cents: 1980,
+        stop_requested: false,
+      },
+      error: null,
+    })
+
+    // Now heartbeat should proceed
+    await sessionBillingService.sendHeartbeat()
+    expect(supabase.functions.invoke).toHaveBeenCalledWith('session-heartbeat', expect.anything())
+
+    await sessionBillingService.endSession()
+  })

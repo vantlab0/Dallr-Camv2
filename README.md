@@ -31,6 +31,7 @@ Phase 7 delivers authoritative backend-controlled session metering, cumulative i
 - `supabase/migrations/20240104000000_harden_security_and_billing.sql`: Security definer path isolation, caller ownership, and billing hardening.
 - `supabase/migrations/20240105000000_secure_paystack_payments.sql`: FOR UPDATE row-locking on payment verification and service_role security.
 - `supabase/migrations/20240106000000_server_authoritative_billing.sql`: Server timestamp metering, 15s lease bounding, and dropping obsolete billing RPC signatures.
+- `supabase/migrations/20240106120000_stale_session_reconciliation_scheduler.sql`: Automatic stale session reconciliation, reconciliation audit log, and pg_cron scheduler.
 - `supabase/migrations/20240107000000_prevent_duplicate_live_sessions.sql`: Partial unique index on active sessions and idempotent start_live_session.
 
 ### 3. Comprehensive Documentation

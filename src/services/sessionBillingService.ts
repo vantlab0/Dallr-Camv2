@@ -21,6 +21,7 @@ export interface SessionBillingState {
   decartSessionId: string | null
   isActive: boolean
   isStarting: boolean
+  isBillable: boolean
   cumulativeSeconds: number
   billedCents: number
   billedUSD: number
@@ -45,6 +46,7 @@ export class SessionBillingService {
   private decartSessionId: string | null = null
   private isActive: boolean = false
   private isStarting: boolean = false
+  private isBillable: boolean = false
   private inFlightStartPromise: Promise<{ sessionId: string; currentBalanceCents: number }> | null = null
   private startupCancelled: boolean = false
 
@@ -83,6 +85,7 @@ export class SessionBillingService {
       decartSessionId: this.decartSessionId,
       isActive: this.isActive,
       isStarting: this.isStarting,
+      isBillable: this.isBillable,
       cumulativeSeconds: this.cumulativeSeconds,
       billedCents: this.billedCents,
       billedUSD: Number((this.billedCents / 100).toFixed(2)),
@@ -93,6 +96,23 @@ export class SessionBillingService {
       exhausted: this.exhausted,
       error: this.error,
     }
+  }
+
+  /**
+   * Updates whether the live session is currently in an active billable state
+   * (e.g. streaming/generating frames) vs disconnected, reconnecting, or idle.
+   */
+  public setBillable(billable: boolean) {
+    if (this.isBillable === billable) return
+    this.isBillable = billable
+    if (!billable) {
+      // Pause heartbeat loop while paused/reconnecting
+      this.stopHeartbeatLoop()
+    } else if (this.isActive && this.sessionId) {
+      // Stream is active and billable: start heartbeat loop
+      this.startHeartbeatLoop()
+    }
+    this.emitState()
   }
 
   private emitState() {
@@ -182,6 +202,7 @@ export class SessionBillingService {
         this.currentBalanceCents = data.current_balance_cents
         this.isActive = true
         this.isStarting = false
+        this.isBillable = true
 
         this.checkBalanceThresholds(this.currentBalanceCents)
         this.emitState()
@@ -216,7 +237,7 @@ export class SessionBillingService {
    * Updates local cumulative seconds.
    */
   public onGenerationTick(seconds: number) {
-    if (!this.isActive) return
+    if (!this.isActive || !this.isBillable) return
     // Ensure monotonically increasing
     if (seconds > this.cumulativeSeconds) {
       this.cumulativeSeconds = Math.floor(seconds)
@@ -247,7 +268,7 @@ export class SessionBillingService {
    * Halts stream if heartbeats fail beyond bounded threshold.
    */
   public async sendHeartbeat(): Promise<void> {
-    if (!this.isActive || !this.sessionId) return
+    if (!this.isActive || !this.isBillable || !this.sessionId) return
 
     try {
       const {
@@ -304,6 +325,7 @@ export class SessionBillingService {
   private handleHeartbeatExhaustedOrFailed(reason: string) {
     this.exhausted = true
     this.isActive = false
+    this.isBillable = false
     this.stopHeartbeatLoop()
     this.error = reason
     this.emitState()
@@ -355,6 +377,7 @@ export class SessionBillingService {
     const activeSessionId = this.sessionId
     this.isActive = false
     this.isStarting = false
+    this.isBillable = false
 
     if (!activeSessionId) {
       return {
