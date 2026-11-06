@@ -22,11 +22,13 @@ jobs:
       - name: Call reconcile-payments Edge Function
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PAYSTACK_SECRET_KEY: ${{ secrets.PAYSTACK_SECRET_KEY }}
           RECONCILE_SHARED_SECRET: ${{ secrets.RECONCILE_SHARED_SECRET }}
         run: |
           set -euo pipefail
-          if [ -z "$SUPABASE_URL" ] || [ -z "$RECONCILE_SHARED_SECRET" ]; then
-            echo "::error::SUPABASE_URL and RECONCILE_SHARED_SECRET repository secrets are required."
+          if [ -z "$SUPABASE_URL" ] || [ -z "$RECONCILE_SHARED_SECRET" ] || [ -z "$PAYSTACK_SECRET_KEY" ]; then
+            echo "::error::SUPABASE_URL, RECONCILE_SHARED_SECRET, and PAYSTACK_SECRET_KEY repository secrets are required."
             exit 1
           fi
 
