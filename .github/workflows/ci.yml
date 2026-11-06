@@ -26,6 +26,14 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Validate required secrets
+        run: |
+          if [ -z "${{ secrets.VITE_SUPABASE_URL }}" ] || [ -z "${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}" ]; then
+            echo "::error::VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY GitHub secrets are required for the frontend build."
+            exit 1
+          fi
+          echo "Required secrets present."
+
       - name: Install dependencies
         run: npm ci
 

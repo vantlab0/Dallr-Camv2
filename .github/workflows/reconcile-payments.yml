@@ -19,6 +19,14 @@ jobs:
     name: Invoke reconcile-payments
     runs-on: ubuntu-latest
     steps:
+      - name: Validate required secrets
+        run: |
+          if [ -z "${{ secrets.SUPABASE_URL }}" ] || [ -z "${{ secrets.RECONCILE_SHARED_SECRET }}" ] || [ -z "${{ secrets.PAYSTACK_SECRET_KEY }}" ]; then
+            echo "::error::SUPABASE_URL, RECONCILE_SHARED_SECRET, and PAYSTACK_SECRET_KEY GitHub secrets are required for payment reconciliation."
+            exit 1
+          fi
+          echo "Required secrets present."
+
       - name: Call reconcile-payments Edge Function
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -28,12 +36,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$SUPABASE_URL" ] || [ -z "$RECONCILE_SHARED_SECRET" ] || [ -z "$PAYSTACK_SECRET_KEY" ]; then
-            echo "::error::SUPABASE_URL, RECONCILE_SHARED_SECRET, and PAYSTACK_SECRET_KEY repository secrets are required."
+            echo "::error::SUPABASE_URL, RECONCILE_SHARED_SECRET, and PAYSTACK_SECRET_KEY environment variables are required."
             exit 1
           fi
 
           response=$(curl --fail-with-body --silent --show-error \
             --retry 3 --retry-delay 5 --retry-connrefused \
+            --max-time 60 \
             -X POST "$SUPABASE_URL/functions/v1/reconcile-payments" \
             -H "Content-Type: application/json" \
             -H "x-reconcile-secret: $RECONCILE_SHARED_SECRET" \
