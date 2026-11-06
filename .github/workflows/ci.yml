@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Lint, test & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit / integration tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify Tauri desktop configuration
+        run: node scripts/verify-tauri-config.mjs
+
+  security:
+    name: Security checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Dependency vulnerability audit (production + dev)
+        run: npm audit --audit-level=high
+
+      - name: Reject accidentally committed secrets
+        run: |
+          set -euo pipefail
+          if git grep -nE '(sk_live_[A-Za-z0-9]{20,}|sb_secret_[A-Za-z0-9_-]{20,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----)' -- . \
+              ':!*.example' ':!package-lock.json' ':!*lock*.json'; then
+            echo "::error::Potential secret material detected in tracked files."
+            exit 1
+          fi
+          echo "No committed secrets detected."
+
+  database-migrations:
+    name: Clean-database migration verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify migration timestamps are unique
+        run: |
+          set -euo pipefail
+          dupes=$(find supabase/migrations -maxdepth 1 -name '*.sql' -printf '%f\n' \
+            | cut -d_ -f1 | sort | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "::error::Duplicate migration timestamps found: $dupes"
+            exit 1
+          fi
+          echo "All migration timestamps are unique."
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Start local Supabase stack
+        run: supabase start
+
+      - name: Apply every migration to a clean database
+        run: supabase db reset --debug
+
+      - name: Verify scheduler, billing state and payment invariants
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          psql -h 127.0.0.1 -p 54322 -U postgres -d postgres \
+            -v ON_ERROR_STOP=1 -f scripts/verify-schema.sql
+
+      - name: Stop local Supabase stack
+        if: always()
+        run: supabase stop --no-backup

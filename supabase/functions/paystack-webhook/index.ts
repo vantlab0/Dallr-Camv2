@@ -51,7 +51,7 @@ serve(async (req) => {
   try {
     const paystackSecretKey = Deno.env.get('PAYSTACK_SECRET_KEY') || ''
     const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_SECRET_KEY') || ''
 
     // Missing secret credentials must immediately cause secure failure
     if (!paystackSecretKey) {
@@ -159,12 +159,27 @@ serve(async (req) => {
       const verifiedCurrency = verifiedDetails?.currency
       const verifiedReference = verifiedDetails?.reference
 
-      // Integrity checks
+      // Paystack echoes the metadata we set during initialization. Verify ownership
+      // when present so a valid signature can never credit another user's wallet.
+      const rawMetadata = verifiedDetails?.metadata
+      let metadataUserId: string | undefined
+      if (typeof rawMetadata === 'string') {
+        try {
+          metadataUserId = JSON.parse(rawMetadata)?.user_id
+        } catch {
+          metadataUserId = undefined
+        }
+      } else if (rawMetadata && typeof rawMetadata === 'object') {
+        metadataUserId = (rawMetadata as Record<string, unknown>).user_id as string | undefined
+      }
+
+      // Integrity checks (server-side, independent of the webhook payload)
       if (
         verifiedStatus !== 'success' ||
         verifiedReference !== reference ||
-        verifiedCurrency !== 'NGN' ||
-        Number(verifiedAmount) !== Number(record.ngn_amount)
+        String(verifiedCurrency).toUpperCase() !== 'NGN' ||
+        Number(verifiedAmount) !== Number(record.ngn_amount) ||
+        (metadataUserId !== undefined && metadataUserId !== record.user_id)
       ) {
         console.error('Integrity check failed for webhook transaction:', {
           verifiedStatus,
@@ -173,6 +188,8 @@ serve(async (req) => {
           verifiedCurrency,
           verifiedAmount,
           expectedAmount: record.ngn_amount,
+          metadataUserId,
+          recordUserId: record.user_id,
         })
 
         // Record as failed, never credit wallet
@@ -196,12 +213,15 @@ serve(async (req) => {
         )
       }
 
-      // 3. Atomically & idempotently credit the wallet via database stored procedure
+      // 3. Atomically & idempotently credit the wallet via database stored procedure.
+      //    Verified amount and currency are mandatory at the database layer.
       const { data: rpcData, error: rpcError } = await supabaseAdmin.rpc(
         'credit_verified_payment',
         {
           p_reference: reference,
           p_gateway_status: 'success',
+          p_verified_amount: Number(verifiedAmount),
+          p_verified_currency: verifiedCurrency,
           p_metadata: {
             webhook_event: eventType,
             gateway_response: verifiedDetails.gateway_response || null,

@@ -25,7 +25,7 @@ serve(async (req) => {
 
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_SECRET_KEY') || ''
     const paystackSecretKey = Deno.env.get('PAYSTACK_SECRET_KEY') || ''
 
     // Missing Paystack or Supabase credentials must cause immediate secure failure
@@ -199,6 +199,33 @@ serve(async (req) => {
       )
     }
 
+    // Ownership must match the metadata we sent during initialization (when present)
+    const rawGatewayMetadata = gatewayData?.metadata
+    let gatewayMetadataUserId: string | undefined
+    if (typeof rawGatewayMetadata === 'string') {
+      try {
+        gatewayMetadataUserId = JSON.parse(rawGatewayMetadata)?.user_id
+      } catch {
+        gatewayMetadataUserId = undefined
+      }
+    } else if (rawGatewayMetadata && typeof rawGatewayMetadata === 'object') {
+      gatewayMetadataUserId = (rawGatewayMetadata as Record<string, unknown>).user_id as string | undefined
+    }
+
+    if (gatewayMetadataUserId !== undefined && gatewayMetadataUserId !== record.user_id) {
+      console.error('Payment ownership mismatch:', {
+        gatewayMetadataUserId,
+        recordUserId: record.user_id,
+      })
+      return new Response(
+        JSON.stringify({ error: 'Transaction ownership mismatch', status: 'failed' }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      )
+    }
+
     const gatewayMeta = {
       gateway_response: gatewayData.gateway_response,
       paid_at: gatewayData.paid_at,
@@ -206,13 +233,16 @@ serve(async (req) => {
       verified_by: 'verify-payment',
     }
 
-    // 5. If status is resolved, invoke credit_verified_payment stored procedure
+    // 5. If status is resolved, invoke credit_verified_payment stored procedure.
+    //    Verified amount and currency are mandatory at the database layer.
     if (gatewayStatus === 'success') {
       const { data: rpcData, error: rpcError } = await supabaseAdmin.rpc(
         'credit_verified_payment',
         {
           p_reference: reference,
           p_gateway_status: 'success',
+          p_verified_amount: Number(gatewayAmount),
+          p_verified_currency: gatewayCurrency,
           p_metadata: gatewayMeta,
         }
       )

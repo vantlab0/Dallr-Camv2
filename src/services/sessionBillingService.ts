@@ -2,25 +2,27 @@
  * Session Billing Service
  *
  * Implements server-authoritative live session usage metering:
- * - Sends periodic heartbeats with cumulative elapsed seconds every 5s.
- * - Receives authoritative wallet debits ($0.04 USD / sec) from backend Edge Function.
+ * - Sends periodic heartbeats every 5s. The backend only charges while the
+ *   server-side billing_state is exactly 'billable'.
+ * - Explicitly pauses billing whenever the stream is reconnecting, disconnected,
+ *   or idle, so users are never charged for dead time.
+ * - Resumes billing only after the stream is re-established.
+ * - Receives authoritative wallet debits ($0.04 USD / sec) from the backend.
  * - Emits warnings at < 30s ($1.20) and < 10s ($0.40).
  * - Enforces immediate teardown if balance is exhausted.
  * - Tracks consecutive heartbeat failures and halts stream if heartbeats fail repeatedly.
- * - Idempotently ends session on:
- *   - User manual end call.
- *   - Output window closure.
- *   - App exit / page beforeunload.
- *   - WebRTC / Decart connection failure.
  */
 
 import { supabase } from '@/lib/supabase'
+
+export type SessionBillingMode = 'idle' | 'billable' | 'paused' | 'ended'
 
 export interface SessionBillingState {
   sessionId: string | null
   decartSessionId: string | null
   isActive: boolean
   isStarting: boolean
+  billingState: SessionBillingMode
   cumulativeSeconds: number
   billedCents: number
   billedUSD: number
@@ -48,6 +50,10 @@ export class SessionBillingService {
   private inFlightStartPromise: Promise<{ sessionId: string; currentBalanceCents: number }> | null = null
   private startupCancelled: boolean = false
 
+  private billingState: SessionBillingMode = 'idle'
+  private billingStateQueue: Promise<void> = Promise.resolve()
+  private lastGenerationTickAt: number = 0
+
   private cumulativeSeconds: number = 0
   private billedCents: number = 0
   private currentBalanceCents: number = 0
@@ -68,6 +74,9 @@ export class SessionBillingService {
   private readonly RATE_CENTS_PER_SECOND = 4 // $0.04 / sec
   private readonly LOW_BALANCE_THRESHOLD_SECONDS = 30 // $1.20 USD
   private readonly CRITICAL_BALANCE_THRESHOLD_SECONDS = 10 // $0.40 USD
+  // If the stream is marked billable but no generation tick arrives for this long,
+  // the client implicitly pauses billing. The backend is always the final authority.
+  private readonly IDLE_TIMEOUT_MS = 20000
 
   public setListeners(listeners: SessionBillingListeners) {
     this.listeners = { ...this.listeners, ...listeners }
@@ -83,6 +92,7 @@ export class SessionBillingService {
       decartSessionId: this.decartSessionId,
       isActive: this.isActive,
       isStarting: this.isStarting,
+      billingState: this.billingState,
       cumulativeSeconds: this.cumulativeSeconds,
       billedCents: this.billedCents,
       billedUSD: Number((this.billedCents / 100).toFixed(2)),
@@ -100,8 +110,96 @@ export class SessionBillingService {
   }
 
   /**
+   * Explicit server-authoritative billing state transition.
+   * - billable: stream is connected and generating.
+   * - paused: reconnecting, disconnected, or temporarily idle.
+   * - idle: startup / no active stream.
+   *
+   * Transitions are serialized so rapid connect/reconnect events cannot race.
+   */
+  public setBillingState(next: SessionBillingMode): Promise<void> {
+    if (next === 'ended') {
+      this.billingState = 'ended'
+      this.emitState()
+      return Promise.resolve()
+    }
+
+    const run = async () => {
+      await this.applyBillingState(next)
+    }
+
+    this.billingStateQueue = this.billingStateQueue.then(run, run)
+    return this.billingStateQueue
+  }
+
+  public pauseBilling(): Promise<void> {
+    return this.setBillingState('paused')
+  }
+
+  public resumeBilling(): Promise<void> {
+    return this.setBillingState('billable')
+  }
+
+  private async applyBillingState(next: Exclude<SessionBillingMode, 'ended'>): Promise<void> {
+    if (!this.isActive || !this.sessionId) {
+      return
+    }
+
+    if (this.billingState === next) {
+      return
+    }
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+
+      const token = session?.access_token
+      if (!token) return
+
+      const { data, error } = await supabase.functions.invoke('session-heartbeat', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: {
+          action: 'billing_state',
+          session_id: this.sessionId,
+          billing_state: next,
+        },
+      })
+
+      if (error || !data?.success) {
+        console.warn(
+          `Failed to set billing state to ${next}:`,
+          data?.error || error?.message || 'Unknown error'
+        )
+        return
+      }
+
+      this.billingState = (data.billing_state as SessionBillingMode) || next
+
+      if (typeof data.billed_cents === 'number') {
+        this.billedCents = data.billed_cents
+      }
+      if (typeof data.cumulative_seconds === 'number' && data.cumulative_seconds > this.cumulativeSeconds) {
+        this.cumulativeSeconds = data.cumulative_seconds
+      }
+      if (typeof data.new_balance_cents === 'number') {
+        this.currentBalanceCents = data.new_balance_cents
+        this.checkBalanceThresholds(this.currentBalanceCents)
+      }
+
+      this.emitState()
+    } catch (err) {
+      console.warn(`Billing state transition to ${next} failed:`, err)
+    }
+  }
+
+  /**
    * Starts a new authoritative live session on the backend.
    * Invoked once Decart connection is confirmed.
+   * The session starts in 'idle'; callers must explicitly resumeBilling()
+   * once the stream is actually generating.
    * Idempotent and thread-safe against concurrent startup attempts.
    */
   public startSession(decartSessionId?: string): Promise<{ sessionId: string; currentBalanceCents: number }> {
@@ -120,6 +218,8 @@ export class SessionBillingService {
 
     this.startupCancelled = false
     this.isStarting = true
+    this.billingState = 'idle'
+    this.lastGenerationTickAt = 0
     this.error = null
     this.cumulativeSeconds = 0
     this.billedCents = 0
@@ -180,6 +280,7 @@ export class SessionBillingService {
 
         this.sessionId = data.session_id
         this.currentBalanceCents = data.current_balance_cents
+        this.billingState = (data.billing_state as SessionBillingMode) || 'idle'
         this.isActive = true
         this.isStarting = false
 
@@ -196,6 +297,7 @@ export class SessionBillingService {
       } catch (err) {
         this.isStarting = false
         this.isActive = false
+        this.billingState = 'idle'
         const errorMsg = err instanceof Error ? err.message : 'Error starting billing'
         this.error = errorMsg
         this.emitState()
@@ -213,10 +315,11 @@ export class SessionBillingService {
 
   /**
    * Called on every generation tick from Decart SDK.
-   * Updates local cumulative seconds.
+   * Updates local display counters. The server remains authoritative for charges.
    */
   public onGenerationTick(seconds: number) {
     if (!this.isActive) return
+    this.lastGenerationTickAt = Date.now()
     // Ensure monotonically increasing
     if (seconds > this.cumulativeSeconds) {
       this.cumulativeSeconds = Math.floor(seconds)
@@ -226,11 +329,20 @@ export class SessionBillingService {
   }
 
   /**
-   * Starts periodic heartbeat to send cumulative usage to backend.
+   * Starts periodic heartbeat to keep the session alive and meter billable usage.
    */
   private startHeartbeatLoop() {
     this.stopHeartbeatLoop()
     this.heartbeatIntervalTimer = setInterval(() => {
+      // Safety net: a billable stream that stops producing frames is effectively idle.
+      // Pause billing so the user is not charged for a frozen/disconnected stream.
+      if (
+        this.billingState === 'billable' &&
+        this.lastGenerationTickAt > 0 &&
+        Date.now() - this.lastGenerationTickAt > this.IDLE_TIMEOUT_MS
+      ) {
+        void this.pauseBilling()
+      }
       void this.sendHeartbeat()
     }, this.HEARTBEAT_INTERVAL_MS)
   }
@@ -243,8 +355,8 @@ export class SessionBillingService {
   }
 
   /**
-   * Sends cumulative usage to authoritative backend.
-   * Halts stream if heartbeats fail beyond bounded threshold.
+   * Sends a keepalive / metering heartbeat to the authoritative backend.
+   * The backend only charges when billing_state is 'billable'.
    */
   public async sendHeartbeat(): Promise<void> {
     if (!this.isActive || !this.sessionId) return
@@ -278,6 +390,14 @@ export class SessionBillingService {
 
       if (data?.success) {
         this.consecutiveHeartbeatFailures = 0
+        if (
+          data.billing_state === 'idle' ||
+          data.billing_state === 'billable' ||
+          data.billing_state === 'paused' ||
+          data.billing_state === 'ended'
+        ) {
+          this.billingState = data.billing_state
+        }
         this.billedCents = data.billed_cents ?? this.billedCents
         this.currentBalanceCents = data.new_balance_cents ?? this.currentBalanceCents
         if (typeof data.cumulative_seconds === 'number' && data.cumulative_seconds > this.cumulativeSeconds) {
@@ -286,7 +406,9 @@ export class SessionBillingService {
 
         this.checkBalanceThresholds(this.currentBalanceCents)
 
-        if (data.stop_requested || data.status === 'terminated_insufficient_funds') {
+        if (data.status === 'terminated_insufficient_funds') {
+          this.handleHeartbeatExhaustedOrFailed('Balance exhausted')
+        } else if (data.stop_requested && this.billingState === 'billable') {
           this.handleHeartbeatExhaustedOrFailed('Balance exhausted')
         } else {
           this.emitState()
@@ -304,6 +426,7 @@ export class SessionBillingService {
   private handleHeartbeatExhaustedOrFailed(reason: string) {
     this.exhausted = true
     this.isActive = false
+    this.billingState = reason === 'Balance exhausted' ? 'ended' : 'paused'
     this.stopHeartbeatLoop()
     this.error = reason
     this.emitState()
@@ -339,6 +462,7 @@ export class SessionBillingService {
 
   /**
    * Finalizes the active session on the backend.
+   * The backend only bills a final interval if billing_state is still 'billable'.
    */
   public async endSession(_finalSeconds?: number): Promise<{
     totalSeconds: number
@@ -357,6 +481,7 @@ export class SessionBillingService {
     this.isStarting = false
 
     if (!activeSessionId) {
+      this.billingState = 'idle'
       return {
         totalSeconds: this.cumulativeSeconds,
         totalBilledUSD: Number(((this.cumulativeSeconds * this.RATE_CENTS_PER_SECOND) / 100).toFixed(2)),
@@ -392,6 +517,8 @@ export class SessionBillingService {
     } finally {
       this.sessionId = null
       this.decartSessionId = null
+      this.billingState = 'idle'
+      this.lastGenerationTickAt = 0
       this.lowBalanceWarning = false
       this.criticalBalanceWarning = false
       this.exhausted = false

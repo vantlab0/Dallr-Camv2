@@ -1,0 +1,40 @@
+name: Reconcile payments
+
+on:
+  schedule:
+    # Every 15 minutes. Recovers payments that Paystack completed but whose local
+    # record was left in 'initialized'/'pending' state.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: reconcile-payments
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    name: Invoke reconcile-payments
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call reconcile-payments Edge Function
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          RECONCILE_SHARED_SECRET: ${{ secrets.RECONCILE_SHARED_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SUPABASE_URL" ] || [ -z "$RECONCILE_SHARED_SECRET" ]; then
+            echo "::error::SUPABASE_URL and RECONCILE_SHARED_SECRET repository secrets are required."
+            exit 1
+          fi
+
+          response=$(curl --fail-with-body --silent --show-error \
+            --retry 3 --retry-delay 5 --retry-connrefused \
+            -X POST "$SUPABASE_URL/functions/v1/reconcile-payments" \
+            -H "Content-Type: application/json" \
+            -H "x-reconcile-secret: $RECONCILE_SHARED_SECRET" \
+            -d '{"older_than_minutes":10,"limit":100}')
+
+          echo "$response"

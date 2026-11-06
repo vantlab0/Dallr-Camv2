@@ -1,0 +1,14 @@
+# Dallr Cam — Supabase project configuration
+# https://supabase.com/docs/guides/local-development/cli/config
+#
+# The Paystack webhook is a server-to-server callback and therefore cannot present
+# a Supabase end-user JWT. JWT verification MUST be disabled for this function.
+# Authenticity is still enforced inside the handler with strict HMAC-SHA512
+# verification of the raw request body against PAYSTACK_SECRET_KEY.
+[functions.paystack-webhook]
+verify_jwt = false
+
+# Payment reconciliation worker is invoked by a scheduled machine job.
+# It authenticates with the RECONCILE_SHARED_SECRET header instead of a user JWT.
+[functions.reconcile-payments]
+verify_jwt = false

@@ -190,26 +190,36 @@ export class DecartStreamService {
       realtimeClient.on('connectionChange', (state) => {
         if (state === 'connected' || state === 'generating') {
           this.updateState('connected')
-          // Authoritatively start billing only if not already active or starting
+
           const billingState = sessionBillingService.getState()
+
           if (!billingState.isActive && !billingState.isStarting) {
+            // Authoritatively start billing only once, then immediately mark the
+            // server session as billable because the stream is actually generating.
             sessionBillingService
               .startSession(realtimeClient.sessionId || undefined)
+              .then(() => sessionBillingService.resumeBilling())
               .catch((err: unknown) => {
                 const message = err instanceof Error ? err.message : 'Failed to start billing session'
                 console.error('Billing startup failed, terminating live stream:', message)
                 this.listeners.onError?.({ code: 'BILLING_START_FAILED', message })
                 void this.endLiveStream()
               })
+          } else if (billingState.isActive && !billingState.isStarting) {
+            // Reconnected after a transient drop: resume the existing session
+            // instead of creating a duplicate one.
+            void sessionBillingService.resumeBilling()
           }
         } else if (state === 'reconnecting') {
+          // Stop charging immediately while the stream is being re-established.
           this.updateState('reconnecting')
+          void sessionBillingService.pauseBilling()
         } else if (state === 'connecting') {
           this.updateState('connecting')
+          void sessionBillingService.pauseBilling()
         } else if (state === 'disconnected') {
           if (this.currentState !== 'ending' && this.currentState !== 'ended') {
-            this.updateState('failed')
-            void sessionBillingService.endSession()
+            void this.handleDisconnectedStream()
           }
         }
       })
@@ -315,6 +325,34 @@ export class DecartStreamService {
       this.localStream = null
     }
     this.remoteStream = null
+  }
+
+  /**
+   * Handles an unexpected transport disconnection.
+   * Billing is paused BEFORE finalizing so the disconnected period cannot be charged.
+   */
+  private async handleDisconnectedStream(): Promise<void> {
+    try {
+      await sessionBillingService.pauseBilling()
+    } catch (err) {
+      console.warn('Failed to pause billing on disconnect:', err)
+    }
+
+    this.updateState('failed')
+
+    try {
+      if (this.realtimeClient) {
+        this.realtimeClient.disconnect()
+        this.realtimeClient = null
+      }
+    } catch (err) {
+      console.warn('Error disconnecting RealTimeClient after drop:', err)
+    }
+
+    this.cleanupMedia()
+    this.currentSession = null
+
+    await sessionBillingService.endSession()
   }
 
   public async endLiveStream(): Promise<void> {

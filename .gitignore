@@ -15,6 +15,10 @@ dist-ssr
 # Environment variables & secrets
 .env
 .env*.local
+.env.staging
+.env.production
+supabase/.env
+supabase/functions/.env
 !.env.example
 
 # Supabase local temp

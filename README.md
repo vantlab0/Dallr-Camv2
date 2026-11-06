@@ -31,7 +31,9 @@ Phase 7 delivers authoritative backend-controlled session metering, cumulative i
 - `supabase/migrations/20240104000000_harden_security_and_billing.sql`: Security definer path isolation, caller ownership, and billing hardening.
 - `supabase/migrations/20240105000000_secure_paystack_payments.sql`: FOR UPDATE row-locking on payment verification and service_role security.
 - `supabase/migrations/20240106000000_server_authoritative_billing.sql`: Server timestamp metering, 15s lease bounding, and dropping obsolete billing RPC signatures.
+- `supabase/migrations/20240106010000_stale_session_reconciliation_scheduler.sql`: Fail-loud pg_cron scheduler registration with duplicate-job guard and `verify_reconciliation_scheduler()`.
 - `supabase/migrations/20240107000000_prevent_duplicate_live_sessions.sql`: Partial unique index on active sessions and idempotent start_live_session.
+- `supabase/migrations/20240108000000_authoritative_billing_state_and_payment_integrity.sql`: Explicit server-authoritative `billing_state` (`idle`/`billable`/`paused`/`ended`), `set_session_billing_state()`, hardened `credit_verified_payment` with mandatory verified amount + currency, partial unique top-up reference index, and payment reconciliation index.
 
 ### 3. Comprehensive Documentation
 - See [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md) for full system architecture, database schema, API contracts, security review, known limitations, and Windows/macOS native build instructions.
@@ -125,13 +127,21 @@ Located in `supabase/functions/`:
    - Returns the backend-authoritative exchange rate (default: `1550 NGN/USD`), minimum top-up requirement (`$15 USD`), and usage rate (`$0.04/s`).
 
 3. **`initialize-payment`**:
-   - Authenticates caller and initializes Paystack transaction.
+   - Authenticates caller, inserts a tracked `payment_records` row FIRST, then initializes Paystack. Gateway details are persisted with retries; a successful gateway init can never leave an untracked payment (recoverable by `reconcile-payments`).
 
-4. **`paystack-webhook`**:
-   - Validates HMAC-SHA512 webhook signature and credits verified transactions.
+4. **`session-heartbeat`**:
+   - Authenticates caller via Supabase JWT.
+   - Authoritative metering: charges only while server-side `billing_state` is `billable`; paused/reconnecting/idle sessions are never charged.
+   - Exposes explicit `billing_state` transitions (`billable` / `paused` / `idle`) and returns authoritative balance and `stop_requested`.
 
-5. **`verify-payment`**:
-   - Synchronizes payment status directly with Paystack API.
+5. **`paystack-webhook`**:
+   - Validates HMAC-SHA512 webhook signature (strict, JWT verification disabled via `supabase/config.toml`), independently verifies amount/currency/reference with Paystack API, and credits verified transactions idempotently.
+
+6. **`verify-payment`**:
+   - Synchronizes payment status directly with Paystack API; server-side amount, currency, status, and ownership checks before crediting.
+
+7. **`reconcile-payments`**:
+   - Scheduled recovery worker (machine-to-machine, `x-reconcile-secret` authenticated, JWT verification disabled). Recovers Paystack payments left in `initialized`/`pending` state after independent gateway verification.
 
 ---
 
@@ -146,13 +156,18 @@ cp .env.example .env
 | Variable | Scope | Description |
 | --- | --- | --- |
 | `VITE_SUPABASE_URL` | Client (Vite) | Supabase project URL |
-| `VITE_SUPABASE_ANON_KEY` | Client (Vite) | Supabase public anonymous API key |
+| `VITE_SUPABASE_ANON_KEY` | Client (Vite) | Supabase public anonymous API key (legacy JWT) |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Client (Vite) | Supabase publishable key (alternative to anon key) |
 | `VITE_APP_NAME` | Client (Vite) | Application name (default: `Dallr Cam`) |
 | `VITE_APP_ENV` | Client (Vite) | Environment mode (`development` / `production`) |
 | `DECART_API_KEY` | Backend (Edge Functions) | Decart Secret API Key (`dct_...`) |
 | `PAYSTACK_SECRET_KEY` | Backend (Edge Functions) | Paystack Secret Key (`sk_live_...` or `sk_test_...`) |
+| `SUPABASE_URL` | Backend (Edge Functions) | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Backend (Edge Functions) | Supabase admin secret key for database operations |
+| `SUPABASE_SECRET_KEY` | Backend (Edge Functions) | Supabase new-style secret key (`sb_secret_...`) |
+| `SUPABASE_JWKS_URL` | Backend (Edge Functions) | Supabase JWKS URL for JWT verification |
 | `PAYSTACK_USD_TO_NGN_RATE` | Backend (Edge Functions) | Authoritative USD to NGN exchange rate (default: `1550`) |
+| `RECONCILE_SHARED_SECRET` | Backend (Edge Functions) | Shared secret authenticating the scheduled `reconcile-payments` worker |
 
 ---
 
@@ -172,3 +187,8 @@ npm run build
 ```bash
 npm run lint
 ```
+
+### CI
+- `.github/workflows/ci.yml`: lint, tests, production build, dependency audit, secret scan, and clean-database migration verification on every push/PR.
+- `.github/workflows/desktop.yml`: Tauri Windows/macOS builds with native permission and video-output verification.
+- `.github/workflows/reconcile-payments.yml`: scheduled (every 15 min) payment reconciliation worker invocation.

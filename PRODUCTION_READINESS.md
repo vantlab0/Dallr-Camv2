@@ -37,9 +37,10 @@ Phase 7 introduces authoritative backend-controlled session billing, cumulative 
         │  • create-decart-token: Issues short-lived token      │
         │  • session-heartbeat: Authoritative 5s metering debit  │
         │  • session-end: Final session reconciliation           │
-        │  • initialize-payment: Paystack checkout init         │
+        │  • initialize-payment: Paystack checkout init (insert-first)   │
         │  • verify-payment: Direct Paystack status verification │
         │  • paystack-webhook: HMAC-SHA512 webhook handler       │
+        │  • reconcile-payments: Scheduled payment recovery worker│
         │                                                        │
         │  Database (PostgreSQL + RLS + SECURITY DEFINER RPCs):  │
         │  • wallets, wallet_transactions, payment_records       │
@@ -104,6 +105,8 @@ CREATE TABLE public.live_sessions (
   ended_at TIMESTAMPTZ,
   duration_seconds BIGINT NOT NULL DEFAULT 0,
   billed_amount BIGINT NOT NULL DEFAULT 0, -- USD cents
+  billing_state TEXT NOT NULL DEFAULT 'idle' CHECK (billing_state IN ('idle', 'billable', 'paused', 'ended')),
+  billing_state_updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
   status TEXT NOT NULL DEFAULT 'active' CHECK (
     status IN ('active', 'completed', 'terminated_insufficient_funds', 'abandoned', 'failed')
   ),
@@ -128,9 +131,10 @@ CREATE TABLE public.reconciliation_logs (
 ```
 
 ### Stored Procedures
-- `start_live_session(p_user_id, p_decart_session_id)`: Validates wallet balance `>= 4` cents, initializes session record.
-- `heartbeat_and_meter_session(p_session_id, p_user_id, p_cumulative_seconds)`: Locks wallet and session rows `FOR UPDATE`, debits incremental seconds at 4 cents/sec, records `wallet_transactions` ledger entry, returns updated balance and `stop_requested`.
-- `end_live_session(p_session_id, p_user_id, p_final_seconds)`: Finalizes duration and status `completed`.
+- `start_live_session(p_user_id, p_decart_session_id)`: Validates wallet balance `>= 4` cents, initializes session record in `billing_state = 'idle'`.
+- `set_session_billing_state(p_session_id, p_user_id, p_billing_state)`: Explicit server-authoritative transition (`billable` / `paused` / `idle`). Meters any billable interval before pausing and resets `last_billed_at` on resume so paused gaps are never retroactively charged.
+- `heartbeat_and_meter_session(p_session_id, p_user_id)`: Locks wallet and session rows `FOR UPDATE`, debits incremental seconds at 4 cents/sec ONLY while `billing_state = 'billable'`, records `wallet_transactions` ledger entry, returns updated balance, `billing_state`, and `stop_requested`.
+- `end_live_session(p_session_id, p_user_id)`: Finalizes duration and status `completed`; final metering occurs only when `billing_state = 'billable'`.
 - `reconcile_stale_sessions()`: Automatically reconciles abandoned sessions that have ceased sending heartbeats (> 45s heartbeat lapse). Safe and idempotent: uses `FOR UPDATE SKIP LOCKED`, debits unbilled duration up to the heartbeat lease cap (15s) without exceeding wallet balance, transitions status to `abandoned`, sets `ended_at = last_heartbeat_at`, and logs execution telemetry into `reconciliation_logs`. Restricted strictly to `service_role`.
 
 ### 4.1 Automatic Stale Session Reconciliation Scheduler
@@ -144,7 +148,15 @@ CREATE TABLE public.reconciliation_logs (
 - **Deployment Safety**: Migrations unschedule existing jobs before re-registering to guarantee zero duplicate cron jobs across deployments.
 - **Security & Auditability**: Execution is restricted to `service_role`. Outcomes (timestamp, duration, reconciled counts, status) are logged to `public.reconciliation_logs` without exposing credentials, secrets, or user tokens.
 
+### 4.2 Supabase Edge Function Config (`supabase/config.toml`)
+Server-to-server Edge Functions cannot present an end-user JWT, so JWT verification is disabled for them. Authenticity is enforced inside the handler instead:
+
+- `paystack-webhook`: `verify_jwt = false`. Authenticity is enforced with strict HMAC-SHA512 verification of the raw request body against `PAYSTACK_SECRET_KEY` (missing/invalid signature → HTTP 401).
+- `reconcile-payments`: `verify_jwt = false`. Authenticity is enforced with the `x-reconcile-secret` shared-secret header (constant-time comparison).
+
 ---
+
+
 
 ## 5. Security Audit Findings & Defenses
 
@@ -164,19 +176,39 @@ CREATE TABLE public.reconciliation_logs (
 ### Client Application (`.env`)
 ```bash
 VITE_SUPABASE_URL="https://your-supabase-project.supabase.co"
-VITE_SUPABASE_ANON_KEY="eyJhbGciOi..."
+VITE_SUPABASE_ANON_KEY="eyJhbGciOi..."            # legacy JWT (optional)
+VITE_SUPABASE_PUBLISHABLE_KEY="sb_publishable_..."  # alternative to anon key
 VITE_APP_NAME="Dallr Cam"
 VITE_APP_ENV="production"
 ```
 
-### Supabase Edge Functions Secrets
+### Supabase Edge Functions Secrets (set via `supabase functions secrets set` or `supabase/functions/.env`, never committed)
 ```bash
-DECART_API_KEY="dct_live_..."
-PAYSTACK_SECRET_KEY="sk_live_..."
 SUPABASE_URL="https://your-supabase-project.supabase.co"
-SUPABASE_SERVICE_ROLE_KEY="eyJhbGciOi..."
+SUPABASE_SERVICE_ROLE_KEY="eyJhbGciOi..."     # legacy service_role JWT (optional)
+SUPABASE_SECRET_KEY="sb_secret_..."            # new-style secret key
+SUPABASE_JWKS_URL="https://your-project.supabase.co/auth/v1/.well-known/jwks.json"
+PAYSTACK_SECRET_KEY="sk_live_..."              # or sk_test_...
 PAYSTACK_USD_TO_NGN_RATE="1550"
+RECONCILE_SHARED_SECRET="<long random secret>" # authenticates scheduled reconcile-payments worker
+DECART_API_KEY="dct_live_..."                  # Decart Secret API Key (backend only)
 ```
+
+**Important**: Live credentials must never be committed. `.env` and `supabase/functions/.env` are gitignored. Rotate any secret that has been pasted into chat or logs.
+
+### 6.1 Payment Initialization Reliability (`initialize-payment`)
+To guarantee a successful Paystack initialization can never leave an untracked payment:
+
+1. A `payment_records` row is inserted FIRST with `status = 'initialized'`.
+2. Only then is Paystack contacted.
+3. If persisting gateway details fails, the row still exists with `recovery_pending` and the scheduled `reconcile-payments` worker recovers it after independent gateway verification (amount, currency, reference, and ownership re-checked server-side).
+
+### 6.2 Webhook Idempotency & Verification (`paystack-webhook` / `verify-payment`)
+- Every webhook is independently re-verified with the Paystack API before crediting.
+- Amount (`NGN` kobo), currency, reference, and user ownership (via initialization metadata) are checked server-side.
+- `credit_verified_payment` requires mandatory `p_verified_amount` and `p_verified_currency`; a partial unique index on `wallet_transactions(reference) WHERE type = 'top_up'` prevents duplicate credits at the database level.
+- `reconcile-payments` runs every 15 minutes via GitHub Actions to recover any payment left in `initialized`/`pending`.
+
 
 ---
 

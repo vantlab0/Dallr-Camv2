@@ -1,6 +1,6 @@
--- Migration: 20240106000000_stale_session_reconciliation_scheduler.sql
+-- Migration: 20240106010000_stale_session_reconciliation_scheduler.sql
 -- Automatic Stale Live Session Reconciliation & Scheduling:
--- 1. Enables pg_cron extension if supported.
+-- 1. Enables pg_cron and FAILS LOUDLY if it is unavailable or cannot be enabled.
 -- 2. Creates public.reconciliation_logs audit table to log reconciliation outcomes and errors safely without secrets.
 -- 3. Updates public.reconcile_stale_sessions() to:
 --    - Enforce service_role / superuser / postgres execution context.
@@ -9,12 +9,47 @@
 --    - Transition status to 'abandoned' with ended_at = last_heartbeat_at.
 --    - Be fully idempotent and safe against concurrent execution.
 --    - Record detailed execution metrics in public.reconciliation_logs.
--- 4. Registers/schedules pg_cron job 'reconcile-stale-live-sessions' running every minute without duplicates.
+-- 4. Registers/schedules pg_cron job 'reconcile-stale-live-sessions' every minute.
+--    Registration failure is a hard deployment error. It is NEVER silently ignored.
+-- 5. Provides public.verify_reconciliation_scheduler() for post-deploy verification.
 
--- 1. Enable pg_cron extension if available
+-- ---------------------------------------------------------------------------
+-- 1. Enable pg_cron (hard failure if unavailable)
+-- ---------------------------------------------------------------------------
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_available_extensions WHERE name = 'pg_cron'
+  ) THEN
+    RAISE EXCEPTION
+      'pg_cron extension is not available in this PostgreSQL instance. Stale session reconciliation cannot be scheduled. Enable the pg_cron extension in the Supabase dashboard (Database > Extensions) and re-run the migration.';
+  END IF;
+END;
+$$;
+
 CREATE EXTENSION IF NOT EXISTS pg_cron;
 
--- 2. Structured Audit Table for Reconciliation Runs
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_extension WHERE extname = 'pg_cron'
+  ) THEN
+    RAISE EXCEPTION
+      'pg_cron extension could not be enabled. Stale session reconciliation cannot be scheduled and deployment must not continue.';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_namespace WHERE nspname = 'cron'
+  ) THEN
+    RAISE EXCEPTION
+      'pg_cron was reported as installed but the cron schema is missing. Stale session reconciliation cannot be scheduled.';
+  END IF;
+END;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 2. Structured audit table for reconciliation runs
+-- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.reconciliation_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   job_name TEXT NOT NULL DEFAULT 'reconcile-stale-live-sessions',
@@ -37,7 +72,9 @@ REVOKE ALL ON TABLE public.reconciliation_logs FROM PUBLIC, anon, authenticated;
 -- Only service_role can view or write reconciliation logs
 GRANT ALL ON TABLE public.reconciliation_logs TO service_role;
 
--- 3. Stale Session Reconciler Function
+-- ---------------------------------------------------------------------------
+-- 3. Stale session reconciler function
+-- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.reconcile_stale_sessions()
 RETURNS INTEGER AS $$
 DECLARE
@@ -254,26 +291,88 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 REVOKE ALL ON FUNCTION public.reconcile_stale_sessions() FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.reconcile_stale_sessions() TO service_role;
 
--- 4. Automatic Scheduler Registration via pg_cron
--- Remove any pre-existing job with the same name to prevent duplicates across deployments
+-- ---------------------------------------------------------------------------
+-- 4. Register the pg_cron job (fail loudly on any registration error)
+-- ---------------------------------------------------------------------------
 DO $$
+DECLARE
+  v_existing_job RECORD;
 BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_extension WHERE extname = 'pg_cron'
-  ) THEN
-    PERFORM cron.unschedule(jobid)
-    FROM cron.job
-    WHERE jobname = 'reconcile-stale-live-sessions';
+  -- Unschedule any previous job with this name to guarantee zero duplicates across deploys
+  FOR v_existing_job IN
+    SELECT jobid FROM cron.job WHERE jobname = 'reconcile-stale-live-sessions'
+  LOOP
+    PERFORM cron.unschedule(v_existing_job.jobid);
+  END LOOP;
 
-    -- Schedule reconcile_stale_sessions() to execute every minute
-    PERFORM cron.schedule(
-      'reconcile-stale-live-sessions',
-      '* * * * *',
-      'SELECT public.reconcile_stale_sessions();'
-    );
-  END IF;
-EXCEPTION WHEN OTHERS THEN
-  -- Safe fallback if pg_cron is disabled or not present in environment
-  RAISE WARNING 'pg_cron job registration skipped: %', SQLERRM;
+  PERFORM cron.schedule(
+    'reconcile-stale-live-sessions',
+    '* * * * *',
+    'SELECT public.reconcile_stale_sessions();'
+  );
 END;
 $$;
+
+-- Verify the job was actually created and is active. Deployment must fail otherwise.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM cron.job
+    WHERE jobname = 'reconcile-stale-live-sessions'
+      AND active = TRUE
+  ) THEN
+    RAISE EXCEPTION
+      'Failed to register the active pg_cron job ''reconcile-stale-live-sessions''. Stale session reconciliation is NOT running. Deployment aborted.';
+  END IF;
+
+  IF (
+    SELECT count(*) FROM cron.job WHERE jobname = 'reconcile-stale-live-sessions'
+  ) <> 1 THEN
+    RAISE EXCEPTION
+      'Expected exactly one pg_cron job named ''reconcile-stale-live-sessions'', but found a different count. Deployment aborted.';
+  END IF;
+END;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 5. Post-deploy verification helper (service_role only)
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.verify_reconciliation_scheduler()
+RETURNS TABLE (
+  job_id BIGINT,
+  jobname TEXT,
+  schedule TEXT,
+  active BOOLEAN,
+  last_run_status TEXT,
+  last_run_at TIMESTAMPTZ,
+  last_reconciled_count INTEGER
+) AS $$
+BEGIN
+  IF NOT public.check_is_service_role() THEN
+    RAISE EXCEPTION 'Access denied: verify_reconciliation_scheduler can only be invoked by service_role';
+  END IF;
+
+  RETURN QUERY
+  SELECT
+    j.jobid,
+    j.jobname,
+    j.schedule,
+    j.active,
+    l.status,
+    l.started_at,
+    l.sessions_reconciled
+  FROM cron.job j
+  LEFT JOIN LATERAL (
+    SELECT status, started_at, sessions_reconciled
+    FROM public.reconciliation_logs
+    WHERE job_name = j.jobname
+    ORDER BY started_at DESC
+    LIMIT 1
+  ) l ON TRUE
+  WHERE j.jobname = 'reconcile-stale-live-sessions';
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+REVOKE ALL ON FUNCTION public.verify_reconciliation_scheduler() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.verify_reconciliation_scheduler() TO service_role;
