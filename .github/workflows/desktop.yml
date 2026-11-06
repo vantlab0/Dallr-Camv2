@@ -48,6 +48,7 @@ jobs:
           cache: npm
 
       - name: Validate required secrets
+        shell: bash
         run: |
           if [ -z "${{ secrets.VITE_SUPABASE_URL }}" ] || [ -z "${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}" ]; then
             echo "::error::VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY GitHub secrets are required for the Tauri desktop build."
