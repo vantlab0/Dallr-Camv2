@@ -18,6 +18,7 @@ def run_cmd(cmd, check=True):
     return res
 
 print("=== 1. Setting up fresh PostgreSQL integration database ===")
+run_cmd(["sudo", "-u", "postgres", "psql", "-c", "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'dallr_integration_test' AND pid <> pg_backend_pid();"])
 run_cmd(["sudo", "-u", "postgres", "dropdb", "--if-exists", "dallr_integration_test"])
 run_cmd(["sudo", "-u", "postgres", "createdb", "dallr_integration_test"])
 
@@ -60,6 +61,7 @@ MIGRATIONS = [
     "supabase/migrations/20240104000000_harden_security_and_billing.sql",
     "supabase/migrations/20240105000000_secure_paystack_payments.sql",
     "supabase/migrations/20240106000000_server_authoritative_billing.sql",
+    "supabase/migrations/20240106120000_stale_session_reconciliation_scheduler.sql",
     "supabase/migrations/20240107000000_prevent_duplicate_live_sessions.sql",
 ]
 
@@ -160,5 +162,17 @@ WHERE user_id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 """
 res = run_cmd(["sudo", "-u", "postgres", "psql", "-d", "dallr_integration_test", "-c", reconcile_test_sql])
 print(res.stdout)
+
+
+print("=== 6. Verifying pg_cron job is active and scheduled ===")
+check_cron_sql = """
+SELECT jobname, schedule, active, command
+FROM cron.job
+WHERE jobname = 'reconcile-stale-live-sessions';
+"""
+res = run_cmd(["sudo", "-u", "postgres", "psql", "-d", "dallr_integration_test", "-t", "-A", "-F", "|", "-c", check_cron_sql])
+cron_line = res.stdout.strip()
+print(f"pg_cron verification: {cron_line}")
+assert "reconcile-stale-live-sessions" in cron_line and "|t|" in cron_line, f"pg_cron job was not registered as active: {cron_line}"
 
 print("ALL REAL DATABASE INTEGRATION TESTS PASSED SUCCESSFULLY!")

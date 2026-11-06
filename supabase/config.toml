@@ -1,0 +1,37 @@
+# Supabase local and project configuration
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "storage", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
+
+[functions.paystack-webhook]
+verify_jwt = false
+
+[functions.initialize-payment]
+verify_jwt = true
+
+[functions.verify-payment]
+verify_jwt = true
+
+[functions.create-decart-token]
+verify_jwt = true
+
+[functions.session-heartbeat]
+verify_jwt = true
+
+[functions.session-end]
+verify_jwt = true
+
+[functions.reconcile-sessions]
+verify_jwt = true
+
+[functions.get-exchange-rate]
+verify_jwt = false
