@@ -17,6 +17,9 @@ interface TopUpModalProps {
 
 const PRESET_AMOUNTS = [15, 25, 50, 100]
 
+// Hardcoded Paystack public key (frontend-safe, meant to be embedded)
+const PAYSTACK_PUBLIC_KEY = 'pk_live_9ca8fd7f800eb630f535045b6a0467fc95e47f18'
+
 export const TopUpModal: React.FC<TopUpModalProps> = ({
   isOpen,
   onClose,
@@ -38,24 +41,24 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
   const numAmount = parseFloat(amount) || 0
   const ngnEquivalent = numAmount * exchangeRateUSDToNGN
 
-  // Load Paystack Pop inline JS SDK once
+  // Load Paystack Pop inline JS SDK from local file (embedded in project)
   useEffect(() => {
     if (paystackScriptRef.current || paystackPopLoaded) return
 
     const script = document.createElement('script')
-    script.src = 'https://js.paystack.co/v1/inline.js'
+    script.src = '/paystack-inline.js'
     script.async = true
     script.onload = () => {
       setPaystackPopLoaded(true)
     }
     script.onerror = () => {
-      console.error('Failed to load Paystack Pop inline.js')
+      console.error('Failed to load local paystack-inline.js')
     }
     document.head.appendChild(script)
     paystackScriptRef.current = script
 
     return () => {
-      // Keep script loaded for the session; do not remove
+      // Keep script loaded for the session
     }
   }, [paystackPopLoaded])
 
@@ -91,18 +94,15 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
       // Open Paystack Inline Popup within the app (no external tab)
       if (typeof window !== 'undefined' && (window as any).PaystackPop) {
         ;(window as any).PaystackPop.setup({
-          key: payment.public_key,
-          email: undefined, // Paystack will prompt for email if not set
-          amount: payment.ngn_amount_kobo, // amount in kobo
+          key: PAYSTACK_PUBLIC_KEY, // Hardcoded public key
+          email: undefined,
+          amount: payment.ngn_amount_kobo,
           ref: payment.reference,
           metadata: {
-            user_email: undefined,
             amount_usd: numAmount,
             app: 'Dallr Cam',
           },
           callback: (_response: any) => {
-            // Paystack Pop callback - transaction successful on gateway
-            // Still verify server-side for security
             void onVerifyPayment(payment.reference).then((res: any) => {
               if (res?.status === 'success') {
                 setIsSuccess(true)
@@ -117,7 +117,6 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
             })
           },
           onClose: () => {
-            // User closed the popup without completing
             setStatusMessage('Payment popup was closed. You can retry or verify below.')
           },
         })
@@ -250,7 +249,6 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
             </div>
           )}
 
-          {/* Amount input */}
           <div className="space-y-1.5">
             <Input
               label={`Amount in USD (Min. $${minimumTopUpUSD}.00)`}
@@ -266,7 +264,6 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
             />
           </div>
 
-          {/* Preset Buttons */}
           <div className="space-y-1.5">
             <label className="block text-xs font-medium text-[#a1a1aa] tracking-wide">
               Quick Select
@@ -289,7 +286,6 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
             </div>
           </div>
 
-          {/* Currency Preview / Exchange rate card */}
           <div className="rounded-lg bg-[#0e0e11] border border-[#27272a] p-3.5 space-y-2">
             <div className="flex justify-between items-center text-xs">
               <span className="text-[#a1a1aa]">Exchange Rate (Backend Trusted)</span>
@@ -310,7 +306,6 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
             <span>Secured via Paystack payment gateway. Instant USD credit on confirmation.</span>
           </div>
 
-          {/* Action buttons */}
           <div className="flex items-center gap-3 pt-2">
             <Button
               type="button"
