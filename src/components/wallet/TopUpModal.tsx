@@ -1,9 +1,9 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Modal } from '@/components/ui/Modal'
 import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
 import { formatNGN, formatUSD } from '@/lib/utils'
-import { DollarSign, ArrowRight, ShieldCheck, Check, ExternalLink, AlertCircle, RefreshCw } from 'lucide-react'
+import { DollarSign, ArrowRight, ShieldCheck, Check, AlertCircle, RefreshCw } from 'lucide-react'
 import type { TopUpInitResponse } from '@/types/wallet'
 
 interface TopUpModalProps {
@@ -32,9 +32,32 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
   const [activePayment, setActivePayment] = useState<TopUpInitResponse | null>(null)
   const [isSuccess, setIsSuccess] = useState<boolean>(false)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
+  const [paystackPopLoaded, setPaystackPopLoaded] = useState<boolean>(false)
+  const paystackScriptRef = useRef<HTMLScriptElement | null>(null)
 
   const numAmount = parseFloat(amount) || 0
   const ngnEquivalent = numAmount * exchangeRateUSDToNGN
+
+  // Load Paystack Pop inline JS SDK once
+  useEffect(() => {
+    if (paystackScriptRef.current || paystackPopLoaded) return
+
+    const script = document.createElement('script')
+    script.src = 'https://js.paystack.co/v1/inline.js'
+    script.async = true
+    script.onload = () => {
+      setPaystackPopLoaded(true)
+    }
+    script.onerror = () => {
+      console.error('Failed to load Paystack Pop inline.js')
+    }
+    document.head.appendChild(script)
+    paystackScriptRef.current = script
+
+    return () => {
+      // Keep script loaded for the session; do not remove
+    }
+  }, [paystackPopLoaded])
 
   const handleAmountChange = (val: string) => {
     setAmount(val)
@@ -65,22 +88,46 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
       const payment = await onInitiatePayment(numAmount)
       setActivePayment(payment)
 
-      if (payment.authorization_url) {
-        // Handle desktop Tauri environment vs browser
-        const isTauri = typeof window !== 'undefined' &&
-          (('__TAURI_INTERNALS__' in window) ||
-           ('__TAURI__' in window) ||
-           Boolean((window as unknown as { isTauri?: boolean }).isTauri))
-
-        if (isTauri) {
-          try {
-            // Use window.open or browser opener
-            window.open(payment.authorization_url, '_blank')
-          } catch {
-            window.location.href = payment.authorization_url
-          }
-        } else {
-          window.open(payment.authorization_url, '_blank', 'noopener,noreferrer')
+      // Open Paystack Inline Popup within the app (no external tab)
+      if (typeof window !== 'undefined' && (window as any).PaystackPop) {
+        ;(window as any).PaystackPop.setup({
+          key: payment.public_key,
+          email: undefined, // Paystack will prompt for email if not set
+          amount: payment.ngn_amount_kobo, // amount in kobo
+          ref: payment.reference,
+          metadata: {
+            user_email: undefined,
+            amount_usd: numAmount,
+            app: 'Dallr Cam',
+          },
+          callback: (_response: any) => {
+            // Paystack Pop callback - transaction successful on gateway
+            // Still verify server-side for security
+            void onVerifyPayment(payment.reference).then((res: any) => {
+              if (res?.status === 'success') {
+                setIsSuccess(true)
+                setTimeout(() => {
+                  handleClose()
+                }, 1500)
+              } else {
+                setStatusMessage(res?.message || 'Payment is awaiting confirmation or incomplete.')
+              }
+            }).catch((err: any) => {
+              setStatusMessage(err instanceof Error ? err.message : 'Failed to verify payment')
+            })
+          },
+          onClose: () => {
+            // User closed the popup without completing
+            setStatusMessage('Payment popup was closed. You can retry or verify below.')
+          },
+        })
+        ;(window as any).PaystackPop.openIframe()
+      } else if (payment.authorization_url) {
+        // Fallback: open in new tab if Paystack Pop not available
+        try {
+          window.open(payment.authorization_url, '_blank')
+        } catch {
+          window.location.href = payment.authorization_url
         }
       }
     } catch (err) {
@@ -164,19 +211,15 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
 
           <div className="text-center space-y-2">
             <p className="text-xs text-[#a1a1aa]">
-              A new browser tab opened for Paystack checkout. Complete the payment in Paystack, then verify your balance.
+              Paystack popup opened above. Complete the payment, then verify your balance.
             </p>
-            {activePayment.authorization_url && (
-              <a
-                href={activePayment.authorization_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-xs text-[#ef4444] hover:underline"
-              >
-                <span>Reopen Paystack checkout page</span>
-                <ExternalLink className="w-3.5 h-3.5" />
-              </a>
-            )}
+            <button
+              onClick={handleSubmit}
+              disabled={isInitializing}
+              className="inline-flex items-center gap-1.5 text-xs text-[#ef4444] hover:underline underline-offset-4"
+            >
+              <span>Reopen payment popup</span>
+            </button>
           </div>
 
           {statusMessage && (

@@ -17,6 +17,7 @@ export interface TopUpInitResponse {
   reference: string
   authorization_url: string
   access_code: string
+  public_key: string
   ngn_amount_kobo: number
   usd_credit_amount_cents: number
   exchange_rate_used: number

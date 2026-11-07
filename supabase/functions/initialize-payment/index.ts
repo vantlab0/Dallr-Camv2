@@ -69,6 +69,7 @@ serve(async (req) => {
     const supabaseServiceKey =
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_SECRET_KEY') || ''
     const paystackSecretKey = Deno.env.get('PAYSTACK_SECRET_KEY') || ''
+    const paystackPublicKey = Deno.env.get('PAYSTACK_PUBLIC_KEY') || ''
     const exchangeRate = Number(Deno.env.get('PAYSTACK_USD_TO_NGN_RATE') || '1550')
 
     if (!paystackSecretKey) {
@@ -289,6 +290,7 @@ serve(async (req) => {
         reference: uniqueRef,
         authorization_url: authorizationUrl,
         access_code: accessCode,
+        public_key: paystackPublicKey,
         ngn_amount_kobo: ngnKobo,
         usd_credit_amount_cents: usdCents,
         exchange_rate_used: exchangeRate,
