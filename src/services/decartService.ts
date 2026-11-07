@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase'
 import { walletService } from '@/services/walletService'
+import { extractFunctionError, logFunctionError } from '@/lib/functionError'
 
 export interface DecartTokenResponse {
   apiKey: string
@@ -49,17 +50,11 @@ export const decartService = {
     })
 
     if (error) {
-      const errorMsg = (data as { error?: string; message?: string })?.error
-        || (data as { message?: string })?.message
-        || error.message
-        || 'Unknown error'
-      const statusCode = (data as { status?: number })?.status
-        || (error as { status?: number })?.status
-        || 'unknown'
-      const statusText = (data as { statusText?: string })?.statusText
-        || (error as { statusText?: string })?.statusText
-        || ''
-      throw new Error(`Edge Function error (${statusCode} ${statusText}): ${errorMsg}`)
+      const err = await extractFunctionError(error)
+      logFunctionError('create-decart-token', err.status, err.statusText, err.message)
+      throw new Error(
+        `Edge Function error (${err.status ?? 'unknown'} ${err.statusText}): ${err.message}`
+      )
     }
 
     if (!data || !data.apiKey) {

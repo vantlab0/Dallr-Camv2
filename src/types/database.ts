@@ -157,6 +157,8 @@ export interface Database {
           duration_seconds: number
           billed_amount: number // cents
           status: 'active' | 'completed' | 'terminated_insufficient_funds' | 'abandoned' | 'failed'
+          billing_state: 'idle' | 'billable' | 'paused' | 'ended'
+          billing_state_updated_at: string
           last_heartbeat_at: string
           last_billed_at: string
           created_at: string
@@ -170,6 +172,8 @@ export interface Database {
           duration_seconds?: number
           billed_amount?: number
           status?: 'active' | 'completed' | 'terminated_insufficient_funds' | 'abandoned' | 'failed'
+          billing_state?: 'idle' | 'billable' | 'paused' | 'ended'
+          billing_state_updated_at?: string
           last_heartbeat_at?: string
           last_billed_at?: string
           created_at?: string
@@ -183,6 +187,8 @@ export interface Database {
           duration_seconds?: number
           billed_amount?: number
           status?: 'active' | 'completed' | 'terminated_insufficient_funds' | 'abandoned' | 'failed'
+          billing_state?: 'idle' | 'billable' | 'paused' | 'ended'
+          billing_state_updated_at?: string
           last_heartbeat_at?: string
           last_billed_at?: string
           created_at?: string
@@ -269,6 +275,22 @@ export interface Database {
           total_seconds: number
           total_billed_cents: number
           final_balance: number
+        }[]
+      }
+      set_session_billing_state: {
+        Args: {
+          p_session_id: string
+          p_user_id: string
+          p_billing_state: string
+        }
+        Returns: {
+          session_id: string
+          billing_state: string
+          status: string
+          cumulative_seconds: number
+          billed_cents: number
+          new_balance: number
+          changed: boolean
         }[]
       }
       reconcile_stale_sessions: {
