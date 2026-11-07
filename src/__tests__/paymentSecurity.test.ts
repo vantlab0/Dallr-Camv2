@@ -16,41 +16,7 @@ describe('Paystack Payment Security & Edge Function Verification Logic', () => {
     vi.clearAllMocks()
   })
 
-  // 1. Minimum top-up requirement enforcement ($15 USD)
-  it('strictly rejects top-up requests below the $15 minimum threshold at client and server level', async () => {
-    await expect(walletService.initializeTopUp(14.99)).rejects.toThrow(
-      'Minimum top-up amount is $15.00 USD'
-    )
-    expect(supabase.functions.invoke).not.toHaveBeenCalled()
-  })
-
-  // 2. Successful payment initialization
-  it('delegates valid top-up requests to backend initialize-payment Edge Function without mock fallbacks', async () => {
-    vi.mocked(supabase.functions.invoke).mockResolvedValueOnce({
-      data: {
-        reference: 'dallr_test_12345',
-        authorization_url: 'https://checkout.paystack.com/real_access_code',
-        access_code: 'real_access_code',
-        ngn_amount_kobo: 2325000,
-        usd_credit_amount_cents: 1500,
-        exchange_rate_used: 1550,
-      },
-      error: null,
-    })
-
-    const result = await walletService.initializeTopUp(15)
-    expect(supabase.functions.invoke).toHaveBeenCalledWith('initialize-payment', {
-      body: {
-        amount_usd: 15,
-        callback_url: undefined,
-      },
-    })
-    expect(result.reference).toBe('dallr_test_12345')
-    expect(result.authorization_url).toBe('https://checkout.paystack.com/real_access_code')
-    expect(result.usd_credit_amount_cents).toBe(1500)
-  })
-
-  // 3. Successful payment verification
+  // 1. Successful payment verification
   it('delegates payment verification directly to backend verify-payment Edge Function', async () => {
     vi.mocked(supabase.functions.invoke).mockResolvedValueOnce({
       data: {
@@ -87,19 +53,7 @@ describe('Paystack Payment Security & Edge Function Verification Logic', () => {
     expect(result.status).toBe('failed')
   })
 
-  // 5. Missing Paystack secret key handling (secure failure, HTTP 500)
-  it('fails securely when Paystack secret credentials are not configured', async () => {
-    vi.mocked(supabase.functions.invoke).mockResolvedValueOnce({
-      data: null,
-      error: new Error('Payment gateway configuration error'),
-    })
-
-    await expect(walletService.initializeTopUp(20)).rejects.toThrow(
-      'Payment gateway configuration error'
-    )
-  })
-
-  // 6. Client attempting to claim payment was successful without paying
+  // 5. Client attempting to claim payment was successful without paying
   it('prevents desktop client from directly modifying wallet balance or spoofing payment', async () => {
     // The client only ever calls verify-payment Edge Function; it never directly calls credit_wallet or updates wallets table
     vi.mocked(supabase.functions.invoke).mockResolvedValueOnce({

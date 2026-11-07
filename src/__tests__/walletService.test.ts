@@ -70,41 +70,6 @@ describe('walletService', () => {
     })
   })
 
-  describe('initializeTopUp', () => {
-    it('enforces minimum $15 top-up check before calling backend', async () => {
-      await expect(walletService.initializeTopUp(14.99)).rejects.toThrow(
-        'Minimum top-up amount is $15.00 USD'
-      )
-      expect(supabase.functions.invoke).not.toHaveBeenCalled()
-    })
-
-    it('invokes initialize-payment edge function for valid top-up', async () => {
-      const mockResponse = {
-        reference: 'dallr_ref_123',
-        authorization_url: 'https://checkout.paystack.com/access123',
-        access_code: 'access123',
-        ngn_amount_kobo: 3875000,
-        usd_credit_amount_cents: 2500,
-        exchange_rate_used: 1550,
-      }
-
-      vi.mocked(supabase.functions.invoke).mockResolvedValueOnce({
-        data: mockResponse,
-        error: null,
-      } as any)
-
-      const res = await walletService.initializeTopUp(25)
-      expect(supabase.functions.invoke).toHaveBeenCalledWith('initialize-payment', {
-        body: {
-          amount_usd: 25,
-          callback_url: undefined,
-        },
-      })
-      expect(res.reference).toBe('dallr_ref_123')
-      expect(res.authorization_url).toBe('https://checkout.paystack.com/access123')
-    })
-  })
-
   describe('verifyPayment', () => {
     it('invokes verify-payment edge function with payment reference', async () => {
       const mockVerification = {

@@ -36,7 +36,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     error,
     paymentFeedback,
     refreshWallet,
-    startTopUpPayment,
     checkPaymentVerification,
     clearFeedback,
   } = useWallet({ userId })
@@ -221,10 +220,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       <TopUpModal
         isOpen={isTopUpOpen}
         onClose={() => setIsTopUpOpen(false)}
-        onInitiatePayment={startTopUpPayment}
         onVerifyPayment={checkPaymentVerification}
         exchangeRateUSDToNGN={exchangeRateUSDToNGN}
         minimumTopUpUSD={minimumTopUpUSD}
+        userId={userId}
+        userEmail={userEmail}
+        appUrl={window.location.origin}
       />
 
       <LiveSetupModal

@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'react'
 import { walletService } from '@/services/walletService'
 import { supabase } from '@/lib/supabase'
 import type { WalletTransaction } from '@/types/database'
-import type { TopUpInitResponse } from '@/types/wallet'
 
 interface UseWalletOptions {
   userId?: string
@@ -159,26 +158,7 @@ export function useWallet(options?: UseWalletOptions) {
     await loadWalletData()
   }
 
-  // 4. Initialize Top-Up
-  const startTopUpPayment = async (amountUSD: number): Promise<TopUpInitResponse> => {
-    setIsProcessing(true)
-    setError(null)
-    setPaymentFeedback(null)
-
-    try {
-      const response = await walletService.initializeTopUp(amountUSD)
-      return response
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Payment initialization failed'
-      setError(msg)
-      setPaymentFeedback({ type: 'error', message: msg })
-      throw err
-    } finally {
-      setIsProcessing(false)
-    }
-  }
-
-  // 5. Verify Payment Status & Update Wallet Feedback
+  // 4. Verify Payment Status & Update Wallet Feedback
   const checkPaymentVerification = async (reference: string) => {
     setIsProcessing(true)
     try {
@@ -220,7 +200,6 @@ export function useWallet(options?: UseWalletOptions) {
     error,
     paymentFeedback,
     refreshWallet,
-    startTopUpPayment,
     checkPaymentVerification,
     clearFeedback,
   }

@@ -8,7 +8,6 @@ vi.mock('../services/walletService', () => ({
     getWallet: vi.fn(),
     getTransactions: vi.fn(),
     getExchangeRateConfig: vi.fn(),
-    initializeTopUp: vi.fn(),
     verifyPayment: vi.fn(),
   },
 }))

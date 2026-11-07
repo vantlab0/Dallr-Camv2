@@ -6,10 +6,12 @@ describe('TopUpModal Component', () => {
   const defaultProps = {
     isOpen: true,
     onClose: vi.fn(),
-    onInitiatePayment: vi.fn(),
     onVerifyPayment: vi.fn(),
     exchangeRateUSDToNGN: 1550,
     minimumTopUpUSD: 15,
+    userId: 'user_123',
+    userEmail: 'test@example.com',
+    appUrl: 'http://localhost:4173',
   }
 
   it('renders with default preset amounts and displays accurate exchange calculations', () => {
@@ -45,34 +47,23 @@ describe('TopUpModal Component', () => {
     expect(screen.getByText(/77,500/)).toBeInTheDocument()
   })
 
-  it('calls onInitiatePayment and transitions to verification view on submit', async () => {
-    const mockInitiate = vi.fn().mockResolvedValue({
-      reference: 'dallr_test_ref_999',
-      authorization_url: 'https://checkout.paystack.com/999',
-      access_code: 'code999',
-      ngn_amount_kobo: 3875000,
-      usd_credit_amount_cents: 2500,
-      exchange_rate_used: 1550,
-    })
-
+  it('opens payment page in new tab on submit', async () => {
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
 
-    render(<TopUpModal {...defaultProps} onInitiatePayment={mockInitiate} />)
+    render(<TopUpModal {...defaultProps} />)
 
     const submitBtn = screen.getByRole('button', { name: /Continue to Paystack/i })
     fireEvent.click(submitBtn)
 
     await waitFor(() => {
-      expect(mockInitiate).toHaveBeenCalledWith(25)
       expect(openSpy).toHaveBeenCalledWith(
-        'https://checkout.paystack.com/999',
+        expect.stringContaining('payment.html'),
         '_blank',
         'noopener,noreferrer'
       )
     })
 
-    expect(screen.getByText('dallr_test_ref_999')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Verify Payment/i })).toBeInTheDocument()
+    expect(screen.getByText('A payment page opened in a new tab. Complete the Paystack payment, then verify your balance here.')).toBeInTheDocument()
 
     openSpy.mockRestore()
   })

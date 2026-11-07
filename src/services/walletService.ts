@@ -1,6 +1,6 @@
 import { supabase } from '@/lib/supabase'
 import type { Wallet, WalletTransaction, PaymentRecord } from '@/types/database'
-import type { TopUpInitResponse, ExchangeRateConfig, VerifyPaymentResult } from '@/types/wallet'
+import type { ExchangeRateConfig, VerifyPaymentResult } from '@/types/wallet'
 
 const DEFAULT_USD_TO_NGN_RATE = 1550
 const DEFAULT_MINIMUM_TOP_UP_USD = 15
@@ -93,29 +93,6 @@ export const walletService = {
         updated_at: new Date().toISOString(),
       }
     }
-  },
-
-  /**
-   * Initialize Paystack top-up through the secure backend Edge Function.
-   * Enforces >= $15 minimum server-side.
-   */
-  async initializeTopUp(amountUSD: number, callbackUrl?: string): Promise<TopUpInitResponse> {
-    if (amountUSD < 15) {
-      throw new Error('Minimum top-up amount is $15.00 USD')
-    }
-
-    const { data, error } = await supabase.functions.invoke<TopUpInitResponse>('initialize-payment', {
-      body: {
-        amount_usd: amountUSD,
-        callback_url: callbackUrl,
-      },
-    })
-
-    if (error || !data) {
-      throw new Error(error?.message || 'Failed to initialize payment gateway')
-    }
-
-    return data
   },
 
   /**

@@ -1,66 +1,45 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState } from 'react'
 import { Modal } from '@/components/ui/Modal'
 import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
 import { formatNGN, formatUSD } from '@/lib/utils'
 import { DollarSign, ArrowRight, ShieldCheck, Check, AlertCircle, RefreshCw } from 'lucide-react'
-import type { TopUpInitResponse } from '@/types/wallet'
 
 interface TopUpModalProps {
   isOpen: boolean
   onClose: () => void
-  onInitiatePayment: (amountUSD: number) => Promise<TopUpInitResponse>
   onVerifyPayment: (reference: string) => Promise<unknown>
   exchangeRateUSDToNGN: number
   minimumTopUpUSD?: number
+  userId?: string
+  userEmail?: string
+  appUrl?: string
 }
 
 const PRESET_AMOUNTS = [15, 25, 50, 100]
 
-// Hardcoded Paystack public key (frontend-safe, meant to be embedded)
-const PAYSTACK_PUBLIC_KEY = 'pk_live_9ca8fd7f800eb630f535045b6a0467fc95e47f18'
+// GitHub Pages payment page URL — update this to your deployed GitHub Pages URL
+const PAYMENT_PAGE_URL = 'https://vantlab0.github.io/Dallr-Camv2/payment.html'
 
 export const TopUpModal: React.FC<TopUpModalProps> = ({
   isOpen,
   onClose,
-  onInitiatePayment,
   onVerifyPayment,
   exchangeRateUSDToNGN,
   minimumTopUpUSD = 15,
+  userId,
+  userEmail,
+  appUrl,
 }) => {
   const [amount, setAmount] = useState<string>('25')
   const [validationError, setValidationError] = useState<string | null>(null)
-  const [isInitializing, setIsInitializing] = useState<boolean>(false)
   const [isVerifying, setIsVerifying] = useState<boolean>(false)
-  const [activePayment, setActivePayment] = useState<TopUpInitResponse | null>(null)
+  const [activePayment, setActivePayment] = useState<{ reference: string; amountUsd: number } | null>(null)
   const [isSuccess, setIsSuccess] = useState<boolean>(false)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
-  const [paystackPopLoaded, setPaystackPopLoaded] = useState<boolean>(false)
-  const paystackScriptRef = useRef<HTMLScriptElement | null>(null)
 
   const numAmount = parseFloat(amount) || 0
   const ngnEquivalent = numAmount * exchangeRateUSDToNGN
-
-  // Load Paystack Pop inline JS SDK from local file (embedded in project)
-  useEffect(() => {
-    if (paystackScriptRef.current || paystackPopLoaded) return
-
-    const script = document.createElement('script')
-    script.src = '/paystack-inline.js'
-    script.async = true
-    script.onload = () => {
-      setPaystackPopLoaded(true)
-    }
-    script.onerror = () => {
-      console.error('Failed to load local paystack-inline.js')
-    }
-    document.head.appendChild(script)
-    paystackScriptRef.current = script
-
-    return () => {
-      // Keep script loaded for the session
-    }
-  }, [paystackPopLoaded])
 
   const handleAmountChange = (val: string) => {
     setAmount(val)
@@ -84,52 +63,28 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
       return
     }
 
-    setIsInitializing(true)
+    if (!userId || !userEmail) {
+      setStatusMessage('User account not found. Please sign in again.')
+      return
+    }
+
     setStatusMessage(null)
 
-    try {
-      const payment = await onInitiatePayment(numAmount)
-      setActivePayment(payment)
+    // Open GitHub Pages payment page in a new tab/window
+    const paymentUrl = new URL(PAYMENT_PAGE_URL)
+    paymentUrl.searchParams.set('user_id', userId)
+    paymentUrl.searchParams.set('email', userEmail)
+    paymentUrl.searchParams.set('amount_usd', numAmount.toString())
+    paymentUrl.searchParams.set('app_url', appUrl || window.location.origin)
 
-      // Open Paystack Inline Popup within the app (no external tab)
-      if (typeof window !== 'undefined' && (window as any).PaystackPop) {
-        ;(window as any).PaystackPop.setup({
-          key: PAYSTACK_PUBLIC_KEY, // Hardcoded public key
-          email: undefined,
-          amount: payment.ngn_amount_kobo,
-          ref: payment.reference,
-          metadata: {
-            amount_usd: numAmount,
-            app: 'Dallr Cam',
-          },
-          callback: (_response: any) => {
-            void onVerifyPayment(payment.reference).then((res: any) => {
-              if (res?.status === 'success') {
-                setIsSuccess(true)
-                setTimeout(() => {
-                  handleClose()
-                }, 1500)
-              } else {
-                setStatusMessage(res?.message || 'Payment is awaiting confirmation or incomplete.')
-              }
-            }).catch((err: any) => {
-              setStatusMessage(err instanceof Error ? err.message : 'Failed to verify payment')
-            })
-          },
-          onClose: () => {
-            setStatusMessage('Payment popup was closed. You can retry or verify below.')
-          },
-        })
-        ;(window as any).PaystackPop.openIframe()
-      } else if (payment.authorization_url) {
-        // Fallback: open in new tab if Paystack Pop not available
-        window.open(payment.authorization_url, '_blank', 'noopener,noreferrer')
-      }
-    } catch (err) {
-      setStatusMessage(err instanceof Error ? err.message : 'Could not initialize payment')
-    } finally {
-      setIsInitializing(false)
+    try {
+      window.open(paymentUrl.toString(), '_blank', 'noopener,noreferrer')
+    } catch {
+      window.location.href = paymentUrl.toString()
     }
+
+    setActivePayment({ reference: 'pending', amountUsd: numAmount })
+    setStatusMessage('Payment page opened. Complete the payment, then verify below.')
   }
 
   const handleCheckStatus = async () => {
@@ -193,27 +148,27 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
             <div className="flex items-center justify-between border-t border-[#1f1f24] pt-2">
               <span className="text-xs text-[#a1a1aa]">NGN Charge Amount</span>
               <span className="text-xs font-mono font-bold text-emerald-400">
-                {formatNGN(activePayment.ngn_amount_kobo / 100)}
+                {formatNGN(Math.round(activePayment.amountUsd * exchangeRateUSDToNGN * 100))}
               </span>
             </div>
             <div className="flex items-center justify-between border-t border-[#1f1f24] pt-2">
               <span className="text-xs text-[#a1a1aa]">USD Credit Amount</span>
               <span className="text-xs font-mono font-bold text-[#f4f4f5]">
-                {formatUSD(activePayment.usd_credit_amount_cents / 100)}
+                {formatUSD(Math.round(activePayment.amountUsd * 100))}
               </span>
             </div>
           </div>
 
           <div className="text-center space-y-2">
             <p className="text-xs text-[#a1a1aa]">
-              Paystack popup opened above. Complete the payment, then verify your balance.
+              A payment page opened in a new tab. Complete the Paystack payment, then verify your balance here.
             </p>
             <button
               onClick={handleSubmit}
-              disabled={isInitializing}
+              disabled={false}
               className="inline-flex items-center gap-1.5 text-xs text-[#ef4444] hover:underline underline-offset-4"
             >
-              <span>Reopen payment popup</span>
+              <span>Reopen payment page</span>
             </button>
           </div>
 
@@ -319,7 +274,7 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
               type="submit"
               variant="primary"
               className="flex-1"
-              isLoading={isInitializing}
+              isLoading={false}
               disabled={Boolean(validationError) || numAmount < minimumTopUpUSD}
               rightIcon={<ArrowRight className="w-4 h-4" />}
             >
