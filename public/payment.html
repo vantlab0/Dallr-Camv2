@@ -122,8 +122,9 @@
       ngnDisplay.textContent = '₦' + (amountUsd * exchangeRate).toLocaleString() + '.00';
 
       let paystackReady = false;
+      let paystackInstance = null;
 
-      // Wait for PaystackPop to load from local inline.js
+      // Wait for PaystackPop to load from CDN
       function waitForPaystack() {
         if (window.PaystackPop) {
           paystackReady = true;
@@ -136,7 +137,7 @@
       function openPopup() {
         statusEl.textContent = 'Opening Paystack payment popup...';
 
-        window.PaystackPop.setup({
+        paystackInstance = window.PaystackPop.setup({
           key: 'pk_live_9ca8fd7f800eb630f535045b6a0467fc95e47f18',
           email: email,
           amount: amountKobo,
@@ -147,7 +148,6 @@
             app: 'Dallr Cam'
           },
           callback: function(response) {
-            // Payment successful on Paystack gateway
             statusEl.textContent = 'Payment successful. Verifying with server...';
             verifyPayment(reference);
           },
@@ -157,7 +157,7 @@
           }
         });
 
-        window.PaystackPop.openIframe();
+        paystackInstance.openIframe();
       }
 
       async function verifyPayment(reference) {
@@ -176,7 +176,6 @@
 
           if (data.status === 'success' || data.already_processed) {
             statusEl.textContent = 'Payment verified successfully!';
-            // Redirect back to app
             setTimeout(function() {
               window.location.href = appUrl + '?payment=success&reference=' + reference;
             }, 1500);
@@ -193,12 +192,11 @@
       reopenBtn.addEventListener('click', function(e) {
         e.preventDefault();
         statusEl.textContent = 'Reopening Paystack popup...';
-        if (window.PaystackPop) {
-          window.PaystackPop.openIframe();
+        if (paystackInstance) {
+          paystackInstance.openIframe();
         }
       });
 
-      // Start
       if (window.PaystackPop) {
         paystackReady = true;
         openPopup();
