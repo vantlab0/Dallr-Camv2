@@ -124,11 +124,7 @@ export const TopUpModal: React.FC<TopUpModalProps> = ({
         ;(window as any).PaystackPop.openIframe()
       } else if (payment.authorization_url) {
         // Fallback: open in new tab if Paystack Pop not available
-        try {
-          window.open(payment.authorization_url, '_blank')
-        } catch {
-          window.location.href = payment.authorization_url
-        }
+        window.open(payment.authorization_url, '_blank', 'noopener,noreferrer')
       }
     } catch (err) {
       setStatusMessage(err instanceof Error ? err.message : 'Could not initialize payment')
