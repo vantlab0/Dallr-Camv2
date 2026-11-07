@@ -19,7 +19,7 @@ interface TopUpModalProps {
 const PRESET_AMOUNTS = [15, 25, 50, 100]
 
 // GitHub Pages payment page URL — update this to your deployed GitHub Pages URL
-const PAYMENT_PAGE_URL = 'https://vantlab0.github.io/Dallr-Camv2/payment.html'
+const PAYMENT_PAGE_URL = 'https://vantlab0.github.io/Dallr-Camv2/public/payment.html'
 
 export const TopUpModal: React.FC<TopUpModalProps> = ({
   isOpen,
