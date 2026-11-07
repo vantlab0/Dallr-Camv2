@@ -49,8 +49,17 @@ export const decartService = {
     })
 
     if (error) {
-      const errorMsg = (data as { error?: string })?.error || error.message
-      throw new Error(errorMsg || 'Failed to obtain authorized Decart live session credentials.')
+      const errorMsg = (data as { error?: string; message?: string })?.error
+        || (data as { message?: string })?.message
+        || error.message
+        || 'Unknown error'
+      const statusCode = (data as { status?: number })?.status
+        || (error as { status?: number })?.status
+        || 'unknown'
+      const statusText = (data as { statusText?: string })?.statusText
+        || (error as { statusText?: string })?.statusText
+        || ''
+      throw new Error(`Edge Function error (${statusCode} ${statusText}): ${errorMsg}`)
     }
 
     if (!data || !data.apiKey) {

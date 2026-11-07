@@ -105,7 +105,10 @@ export const walletService = {
     })
 
     if (error || !data) {
-      throw new Error(error?.message || 'Failed to verify payment status')
+      const errorMsg = error?.message || 'Unknown error'
+      const statusCode = (error as { status?: number })?.status || 'unknown'
+      const statusText = (error as { statusText?: string })?.statusText || ''
+      throw new Error(`Edge Function error (${statusCode} ${statusText}): ${errorMsg}`)
     }
 
     return data

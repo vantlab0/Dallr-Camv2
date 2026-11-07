@@ -169,9 +169,14 @@ export class SessionBillingService {
       })
 
       if (error || !data?.success) {
+        const errorMsg = (data as { error?: string; message?: string })?.error
+          || (data as { message?: string })?.message
+          || error?.message
+          || 'Unknown error'
+        const statusCode = (error as { status?: number })?.status || 'unknown'
+        const statusText = (error as { statusText?: string })?.statusText || ''
         console.warn(
-          `Failed to set billing state to ${next}:`,
-          data?.error || error?.message || 'Unknown error'
+          `Failed to set billing state to ${next}: Edge Function error (${statusCode} ${statusText}): ${errorMsg}`
         )
         return
       }
@@ -252,8 +257,13 @@ export class SessionBillingService {
         })
 
         if (error || !data?.success) {
-          const msg = data?.error || error?.message || 'Failed to start billing session'
-          throw new Error(msg)
+          const errorMsg = (data as { error?: string; message?: string })?.error
+            || (data as { message?: string })?.message
+            || error?.message
+            || 'Unknown error'
+          const statusCode = (error as { status?: number })?.status || 'unknown'
+          const statusText = (error as { statusText?: string })?.statusText || ''
+          throw new Error(`Edge Function error (${statusCode} ${statusText}): ${errorMsg}`)
         }
 
         // If the session was cancelled or ended while this asynchronous request was in-flight,
@@ -381,9 +391,12 @@ export class SessionBillingService {
 
       if (error) {
         this.consecutiveHeartbeatFailures += 1
-        console.warn(`Billing heartbeat warning (${this.consecutiveHeartbeatFailures}/${this.MAX_CONSECUTIVE_FAILURES}):`, error.message)
+        const errorMsg = error?.message || 'Unknown error'
+        const statusCode = (error as { status?: number })?.status || 'unknown'
+        const statusText = (error as { statusText?: string })?.statusText || ''
+        console.warn(`Billing heartbeat warning (${this.consecutiveHeartbeatFailures}/${this.MAX_CONSECUTIVE_FAILURES}): Edge Function error (${statusCode} ${statusText}): ${errorMsg}`)
         if (this.consecutiveHeartbeatFailures >= this.MAX_CONSECUTIVE_FAILURES) {
-          this.handleHeartbeatExhaustedOrFailed('Billing heartbeat communication lost with server.')
+          this.handleHeartbeatExhaustedOrFailed(`Billing heartbeat communication lost: Edge Function error (${statusCode} ${statusText}): ${errorMsg}`)
         }
         return
       }

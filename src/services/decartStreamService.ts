@@ -200,7 +200,10 @@ export class DecartStreamService {
               .startSession(realtimeClient.sessionId || undefined)
               .then(() => sessionBillingService.resumeBilling())
               .catch((err: unknown) => {
-                const message = err instanceof Error ? err.message : 'Failed to start billing session'
+                const errorMsg = err instanceof Error ? err.message : String(err)
+                const statusCode = (err as { status?: number })?.status || 'unknown'
+                const statusText = (err as { statusText?: string })?.statusText || ''
+                const message = `Edge Function error (${statusCode} ${statusText}): ${errorMsg}`
                 console.error('Billing startup failed, terminating live stream:', message)
                 this.listeners.onError?.({ code: 'BILLING_START_FAILED', message })
                 void this.endLiveStream()

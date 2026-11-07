@@ -177,7 +177,10 @@ export function useWallet(options?: UseWalletOptions) {
       }
       return result
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Verification failed'
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      const statusCode = (err as { status?: number })?.status || 'unknown'
+      const statusText = (err as { statusText?: string })?.statusText || ''
+      const msg = `Edge Function error (${statusCode} ${statusText}): ${errorMsg}`
       setPaymentFeedback({ type: 'error', message: msg })
       throw err
     } finally {
