@@ -1,6 +1,16 @@
-import { supabase } from '@/lib/supabase'
-import { walletService } from '@/services/walletService'
-import { extractFunctionError, logFunctionError } from '@/lib/functionError'
+/**
+ * Decart Service
+ *
+ * Provides the Decart API key directly from the desktop application's own
+ * configuration. The key is embedded locally (DECART_API_KEY) and used
+ * to authenticate the Decart SDK WebRTC connection. No backend Edge Function
+ * is involved in token issuance.
+ *
+ * SECURITY NOTE: The Decart API key is now shipped inside the desktop app.
+ * This is appropriate for a single-owner personal application. For a
+ * multi-user production app, the key must remain server-side and only
+ * short-lived client tokens should be issued.
+ */
 
 export interface DecartTokenResponse {
   apiKey: string
@@ -17,60 +27,25 @@ export interface DecartTokenResponse {
 
 export const decartService = {
   /**
-   * Requests a short-lived Decart client token from the backend Edge Function.
-   * Ensures the secret Decart API key is kept securely on the backend
-   * and never exposed to the desktop client.
+   * Returns the Decart API key from local application configuration.
+   * No Edge Function is called. The key is used directly by the Decart SDK
+   * to establish the WebRTC session to Decart Lucy 2.5.
    */
   async requestClientToken(): Promise<DecartTokenResponse> {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession()
+    const apiKey = import.meta.env.DECART_API_KEY || ''
 
-    const token = session?.access_token
-
-    if (!token) {
-      throw new Error('Authentication required to request live session credentials.')
-    }
-
-    // Verify wallet eligibility on client before network call if possible
-    if (session.user?.id) {
-      const wallet = await walletService.getWallet(session.user.id)
-      const balanceCents = wallet?.balance ?? 0
-      if (balanceCents < 4) {
-        throw new Error(
-          `Insufficient wallet balance. At least $0.04 USD is required to start live streaming. Current balance: $${(balanceCents / 100).toFixed(2)} USD.`
-        )
-      }
-    }
-
-    const { data, error } = await supabase.functions.invoke('create-decart-token', {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (error) {
-      const err = await extractFunctionError(error)
-      logFunctionError('create-decart-token', err.status, err.statusText, err.message)
+    if (!apiKey) {
       throw new Error(
-        `Edge Function error (${err.status ?? 'unknown'} ${err.statusText}): ${err.message}`
+        'DECART_API_KEY is not configured. Set DECART_API_KEY in your .env file ' +
+          'and restart the application.',
       )
     }
 
-    if (!data || !data.apiKey) {
-      // In case Edge Function returned token under 'token'
-      const key = data?.apiKey || data?.token
-      if (!key) {
-        throw new Error('Invalid response received from Decart token service.')
-      }
-      return {
-        apiKey: key,
-        expiresAt: data.expires_at || data.expiresAt || new Date(Date.now() + 300000).toISOString(),
-        permissions: data.permissions || null,
-        constraints: data.constraints || null,
-      }
+    return {
+      apiKey,
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(), // 24 hours
+      permissions: { models: ['lucy-2.5'] },
+      constraints: null,
     }
-
-    return data as DecartTokenResponse
   },
 }

@@ -2,8 +2,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { decartStreamService } from '@/services/decartStreamService'
 import { decartService } from '@/services/decartService'
 import { sessionBillingService } from '@/services/sessionBillingService'
-import { supabase } from '@/lib/supabase'
-import { walletService } from '@/services/walletService'
 import type { PreparedImageReference } from '@/types/live'
 
 vi.mock('@/lib/supabase', () => ({
@@ -35,46 +33,31 @@ describe('decartService', () => {
     vi.clearAllMocks()
   })
 
-  it('requests client token using backend Edge Function endpoint', async () => {
-    vi.mocked(supabase.auth.getSession).mockResolvedValue({
-      data: {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        session: {
-          access_token: 'fake-jwt',
-          user: { id: 'user-123' },
-        } as any,
-      },
-      error: null,
-    })
+  it('returns the embedded Decart API key from local configuration', async () => {
+    vi.stubEnv('DECART_API_KEY', 'dct_live_test_key_12345')
 
-    vi.spyOn(walletService, 'getWallet').mockResolvedValue({
-      id: 'w1',
-      user_id: 'user-123',
-      balance: 1000,
-      currency: 'USD',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
+    try {
+      const token = await decartService.requestClientToken()
+      expect(token).toBeDefined()
+      expect(token.apiKey).toBe('dct_live_test_key_12345')
+      expect(typeof token.apiKey).toBe('string')
+      expect(token.permissions?.models).toContain('lucy-2.5')
+      expect(token.expiresAt).toBeDefined()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
 
-    vi.mocked(supabase.functions.invoke).mockResolvedValue({
-      data: {
-        apiKey: 'tok_client_decart_test_123',
-        expiresAt: new Date(Date.now() + 300000).toISOString(),
-        permissions: { models: ['lucy-2.5'] },
-      },
-      error: null,
-    })
+  it('throws when DECART_API_KEY is not configured', async () => {
+    vi.unstubAllEnvs()
 
-    const token = await decartService.requestClientToken()
-    expect(supabase.functions.invoke).toHaveBeenCalledWith('create-decart-token', {
-      headers: {
-        Authorization: 'Bearer fake-jwt',
-      },
-    })
-    expect(token).toBeDefined()
-    expect(token.apiKey).toBe('tok_client_decart_test_123')
-    expect(typeof token.apiKey).toBe('string')
-    expect(token.permissions?.models).toContain('lucy-2.5')
+    try {
+      await expect(decartService.requestClientToken()).rejects.toThrow(
+        'DECART_API_KEY is not configured',
+      )
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })
 

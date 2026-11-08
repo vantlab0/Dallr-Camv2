@@ -1,18 +1,20 @@
 /**
  * Session Billing Service
  *
- * Implements server-authoritative live session usage metering through the
- * `session-heartbeat` and `session-end` Supabase Edge Functions, which in turn
- * execute the PostgreSQL RPCs `start_live_session`, `set_session_billing_state`,
- * `heartbeat_and_meter_session` and `end_live_session`.
+ * Local-first billing for a personal single-user application.
  *
- * The client never mutates wallet or session rows directly. It asks the
- * backend to start, meter and end sessions, and adopts the server-authoritative
- * balance / duration returned by those functions.
+ * - Wallet balance is read locally from Supabase at session start.
+ * - Credits are deducted locally at $0.04 USD per billable second.
+ * - No Edge Function is called during the session (no constant heartbeat
+ *   metering). The heartbeat loop only updates local state.
+ * - When the session ends, the final state is synced to the cloud once via
+ *   the `session-end` Edge Function (which runs `end_live_session()`).
+ *
+ * Because this is a personal application, the Decart API key and billing
+ * logic live entirely in the desktop client.
  */
 
 import { supabase } from '@/lib/supabase'
-import { extractFunctionError, logFunctionError } from '@/lib/functionError'
 
 export type SessionBillingMode = 'idle' | 'billable' | 'paused' | 'ended'
 
@@ -46,12 +48,10 @@ export class SessionBillingService {
   private decartSessionId: string | null = null
   private isActive: boolean = false
   private isStarting: boolean = false
-  private inFlightStartPromise: Promise<{ sessionId: string; currentBalanceCents: number }> | null = null
-  private startupCancelled: boolean = false
 
   private billingState: SessionBillingMode = 'idle'
-  private billingStateQueue: Promise<void> = Promise.resolve()
   private lastGenerationTickAt: number = 0
+  private lastDeductionAt: number = 0
 
   private cumulativeSeconds: number = 0
   private billedCents: number = 0
@@ -61,9 +61,6 @@ export class SessionBillingService {
   private criticalBalanceWarning: boolean = false
   private exhausted: boolean = false
   private error: string | null = null
-
-  private consecutiveHeartbeatFailures: number = 0
-  private readonly MAX_CONSECUTIVE_FAILURES: number = 3
 
   private heartbeatIntervalTimer: ReturnType<typeof setInterval> | null = null
   private listeners: SessionBillingListeners = {}
@@ -112,12 +109,13 @@ export class SessionBillingService {
       return Promise.resolve()
     }
 
-    const run = async () => {
-      await this.applyBillingState(next)
+    if (this.billingState === next) {
+      return Promise.resolve()
     }
 
-    this.billingStateQueue = this.billingStateQueue.then(run, run)
-    return this.billingStateQueue
+    this.billingState = next
+    this.emitState()
+    return Promise.resolve()
   }
 
   public pauseBilling(): Promise<void> {
@@ -128,55 +126,6 @@ export class SessionBillingService {
     return this.setBillingState('billable')
   }
 
-  private async applyBillingState(next: Exclude<SessionBillingMode, 'ended'>): Promise<void> {
-    if (!this.isActive || !this.sessionId) {
-      return
-    }
-
-    if (this.billingState === next) {
-      return
-    }
-
-    try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
-
-      const token = session?.access_token
-      if (!token) return
-
-      const invokeResult = await supabase.functions.invoke('session-heartbeat', {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        body: {
-          action: 'billing_state',
-          session_id: this.sessionId,
-          billing_state: next,
-        },
-      })
-      // `invoke` always returns a response object in production; in unit tests an
-      // unmocked vi.fn() may return undefined, so read defensively.
-      const data = invokeResult?.data
-      const error = invokeResult?.error
-
-      if (error || !data) {
-        const err = await extractFunctionError(error)
-        logFunctionError('session-heartbeat', err.status, err.statusText, err.message)
-        return
-      }
-
-      this.billingState = (data.billing_state as SessionBillingMode) ?? next
-      if (data.billed_cents !== undefined) this.billedCents = Number(data.billed_cents)
-      if (data.new_balance_cents !== undefined) this.currentBalanceCents = Number(data.new_balance_cents)
-      if (data.cumulative_seconds !== undefined) this.cumulativeSeconds = Number(data.cumulative_seconds)
-
-      this.emitState()
-    } catch (err) {
-      console.warn(`Billing state transition to ${next} failed:`, err)
-    }
-  }
-
   public startSession(decartSessionId?: string): Promise<{ sessionId: string; currentBalanceCents: number }> {
     if (this.isActive && this.sessionId) {
       return Promise.resolve({
@@ -185,21 +134,33 @@ export class SessionBillingService {
       })
     }
 
-    if (this.isStarting && this.inFlightStartPromise) {
-      return this.inFlightStartPromise
+    if (this.isStarting) {
+      // Return a promise that resolves once the current start completes
+      return new Promise((resolve) => {
+        const check = () => {
+          if (!this.isStarting) {
+            resolve({
+              sessionId: this.sessionId!,
+              currentBalanceCents: this.currentBalanceCents,
+            })
+          } else {
+            setTimeout(check, 50)
+          }
+        }
+        check()
+      })
     }
 
-    this.startupCancelled = false
     this.isStarting = true
     this.billingState = 'idle'
     this.lastGenerationTickAt = 0
+    this.lastDeductionAt = Date.now()
     this.error = null
     this.cumulativeSeconds = 0
     this.billedCents = 0
     this.lowBalanceWarning = false
     this.criticalBalanceWarning = false
     this.exhausted = false
-    this.consecutiveHeartbeatFailures = 0
     this.decartSessionId = decartSessionId || null
     this.emitState()
 
@@ -207,59 +168,52 @@ export class SessionBillingService {
       try {
         const {
           data: { session },
+          error: authError,
         } = await supabase.auth.getSession()
 
-        const token = session?.access_token
-        if (!token) {
+        if (authError || !session?.access_token) {
           throw new Error('Authentication required to start billing session.')
         }
 
-        // Ask the backend to create the live session via the session-heartbeat
-        // Edge Function, which executes the server-authoritative start_live_session()
-        // RPC (wallet check, duplicate-session prevention, idle initial state).
-        const invokeResult = await supabase.functions.invoke('session-heartbeat', {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          body: {
-            action: 'start',
-            decart_session_id: decartSessionId || null,
-          },
-        })
-        // `invoke` always returns a response object in production; in unit tests an
-        // unmocked vi.fn() may return undefined, so read defensively.
-        const data = invokeResult?.data
-        const error = invokeResult?.error
+        // Read wallet balance locally from Supabase (SELECT only, allowed by RLS)
+        const { data: wallet, error: walletError } = await supabase
+          .from('wallets')
+          .select('balance')
+          .eq('user_id', session.user.id)
+          .single()
 
-        if (error || !data) {
-          const err = await extractFunctionError(error)
-          logFunctionError('session-heartbeat', err.status, err.statusText, err.message)
+        if (walletError || !wallet) {
+          throw new Error('Wallet not found. Please add funds before starting a live stream.')
+        }
+
+        if (wallet.balance < 4) {
           throw new Error(
-            `Edge Function error (${err.status ?? 'unknown'} ${err.statusText}): ${err.message}`
+            `Insufficient balance to start live stream. ` +
+              `Current balance: $${(wallet.balance / 100).toFixed(2)} USD. ` +
+              `Minimum required: $0.04 USD.`,
           )
         }
 
-        // If startup was cancelled while the request was in flight, terminate the
-        // session the backend just created so no orphaned active session remains.
-        if (this.startupCancelled) {
-          try {
-            await supabase.functions.invoke('session-end', {
-              headers: {
-                Authorization: `Bearer ${token}`,
-              },
-              body: { session_id: data.session_id, final_seconds: 0 },
-            })
-          } catch (endErr) {
-            console.warn(
-              '[sessionBillingService] Failed to terminate orphaned session:',
-              endErr
-            )
-          }
-          throw new Error('Live session startup was cancelled.')
+        // Create the live session record via Edge Function (one call at start)
+        const { data: sessionData, error: sessionError } = await supabase.functions.invoke(
+          'session-heartbeat',
+          {
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: {
+              action: 'start',
+              decart_session_id: decartSessionId || null,
+            },
+          },
+        )
+
+        if (sessionError || !sessionData) {
+          throw new Error(sessionError?.message || 'Failed to create live session.')
         }
 
-        this.sessionId = data.session_id ?? null
-        this.currentBalanceCents = Number(data.current_balance_cents ?? 0)
+        this.sessionId = sessionData.session_id ?? null
+        this.currentBalanceCents = Number(sessionData.current_balance_cents ?? wallet.balance)
         this.billingState = 'idle'
         this.isActive = true
         this.isStarting = false
@@ -282,13 +236,9 @@ export class SessionBillingService {
         this.emitState()
         this.listeners.onError?.(errorMsg)
         throw err
-      } finally {
-        this.inFlightStartPromise = null
-        this.isStarting = false
       }
     })()
 
-    this.inFlightStartPromise = startPromise
     return startPromise
   }
 
@@ -304,6 +254,7 @@ export class SessionBillingService {
 
   private startHeartbeatLoop() {
     this.stopHeartbeatLoop()
+    this.lastDeductionAt = Date.now()
     this.heartbeatIntervalTimer = setInterval(() => {
       if (
         this.billingState === 'billable' &&
@@ -323,76 +274,54 @@ export class SessionBillingService {
     }
   }
 
+  /**
+   * Local-only credit deduction. No Edge Function is called.
+   * Runs every heartbeat interval while billingState is 'billable'.
+   */
   public async sendHeartbeat(): Promise<void> {
     if (!this.isActive || !this.sessionId) return
 
-    try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
-
-      const token = session?.access_token
-      if (!token) return
-
-      const invokeResult = await supabase.functions.invoke('session-heartbeat', {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        body: {
-          action: 'heartbeat',
-          session_id: this.sessionId,
-        },
-      })
-      const data = invokeResult?.data
-      const error = invokeResult?.error
-
-      if (error || !data) {
-        const err = await extractFunctionError(error)
-        logFunctionError('session-heartbeat', err.status, err.statusText, err.message)
-        throw new Error(
-          `Edge Function error (${err.status ?? 'unknown'} ${err.statusText}): ${err.message}`
-        )
-      }
-
-      // Adopt server-authoritative values. The backend only bills while
-      // billing_state is 'billable'; paused/idle heartbeats are keepalives.
-      this.cumulativeSeconds = Number(data.cumulative_seconds ?? this.cumulativeSeconds)
-      this.billedCents = Number(data.billed_cents ?? this.billedCents)
-      this.currentBalanceCents = Number(data.new_balance_cents ?? this.currentBalanceCents)
-      if (data.billing_state) {
-        this.billingState = data.billing_state as SessionBillingMode
-      }
-
-      this.checkBalanceThresholds(this.currentBalanceCents)
-      this.consecutiveHeartbeatFailures = 0
+    if (this.billingState !== 'billable') {
+      // Paused / idle: just emit state, no deduction
       this.emitState()
+      return
+    }
 
-      // A paused session is not streaming, so a low-balance stop_requested must
-      // not terminate it. Only actively billable sessions are terminated on
-      // balance exhaustion.
-      if (data.stop_requested === true && this.billingState !== 'paused') {
-        this.handleHeartbeatExhaustedOrFailed(
-          typeof data.reason === 'string' && data.reason.length > 0
-            ? data.reason
-            : 'Balance exhausted'
-        )
-      }
-    } catch (err) {
-      this.consecutiveHeartbeatFailures += 1
-      const errorMsg = err instanceof Error ? err.message : String(err)
-      console.warn('Billing heartbeat error:', errorMsg)
-      if (this.consecutiveHeartbeatFailures >= this.MAX_CONSECUTIVE_FAILURES) {
-        this.handleHeartbeatExhaustedOrFailed(
-          `Billing heartbeat communication lost: ${errorMsg}`
-        )
+    const now = Date.now()
+    const elapsedSeconds = Math.floor((now - this.lastDeductionAt) / 1000)
+
+    if (elapsedSeconds > 0) {
+      const debitCents = elapsedSeconds * this.RATE_CENTS_PER_SECOND
+
+      if (this.currentBalanceCents >= debitCents) {
+        this.currentBalanceCents -= debitCents
+        this.billedCents += debitCents
+        this.cumulativeSeconds += elapsedSeconds
+      } else {
+        // Not enough to cover the full elapsed interval: bill what's affordable
+        const affordableSeconds = Math.floor(this.currentBalanceCents / this.RATE_CENTS_PER_SECOND)
+        const affordableCents = affordableSeconds * this.RATE_CENTS_PER_SECOND
+
+        if (affordableCents > 0) {
+          this.currentBalanceCents -= affordableCents
+          this.billedCents += affordableCents
+          this.cumulativeSeconds += affordableSeconds
+        }
+
+        this.handleExhaustion('Balance exhausted')
+        return
       }
     }
+
+    this.lastDeductionAt = now
+    this.checkBalanceThresholds(this.currentBalanceCents)
+    this.emitState()
   }
 
-  private handleHeartbeatExhaustedOrFailed(reason: string) {
+  private handleExhaustion(reason: string) {
     this.exhausted = true
     this.isActive = false
-    this.billingState = reason === 'Balance exhausted' ? 'ended' : 'paused'
+    this.billingState = 'ended'
     this.stopHeartbeatLoop()
     this.error = reason
     this.emitState()
@@ -400,9 +329,7 @@ export class SessionBillingService {
       this.cumulativeSeconds,
       Number((this.billedCents / 100).toFixed(2))
     )
-    if (reason !== 'Balance exhausted') {
-      this.listeners.onError?.(reason)
-    }
+    this.listeners.onError?.(reason)
   }
 
   private checkBalanceThresholds(balanceCents: number) {
@@ -423,15 +350,15 @@ export class SessionBillingService {
     }
   }
 
-  public async endSession(_finalSeconds?: number): Promise<{
+  /**
+   * Ends the local billing session and syncs the final state to the cloud once
+   * via the `session-end` Edge Function (not called during the session).
+   */
+  public async endSession(): Promise<{
     totalSeconds: number
     totalBilledUSD: number
     finalBalanceUSD: number
   }> {
-    if (this.isStarting) {
-      this.startupCancelled = true
-    }
-
     this.stopHeartbeatLoop()
 
     const activeSessionId = this.sessionId
@@ -442,47 +369,37 @@ export class SessionBillingService {
       this.billingState = 'idle'
       return {
         totalSeconds: this.cumulativeSeconds,
-        totalBilledUSD: Number(((this.cumulativeSeconds * this.RATE_CENTS_PER_SECOND) / 100).toFixed(2)),
+        totalBilledUSD: Number((this.billedCents / 100).toFixed(2)),
         finalBalanceUSD: Number((this.currentBalanceCents / 100).toFixed(2)),
       }
     }
 
     try {
       const {
-        data: { session } = {},
+        data: { session },
       } = await supabase.auth.getSession()
 
       const token = session?.access_token
       if (token) {
-        // Finalize the session on the backend via the session-end Edge Function,
-        // which executes the server-authoritative end_live_session() RPC.
-        const invokeResult = await supabase.functions.invoke('session-end', {
+        // Single cloud sync at end of session (not constant)
+        await supabase.functions.invoke('session-end', {
           headers: {
             Authorization: `Bearer ${token}`,
           },
           body: { session_id: activeSessionId },
         })
-        const data = invokeResult?.data
-        const error = invokeResult?.error
-
-        if (!error && data) {
-          this.cumulativeSeconds = Number(data.total_seconds ?? this.cumulativeSeconds)
-          this.billedCents = Number(data.total_billed_cents ?? this.billedCents)
-          this.currentBalanceCents = Number(data.final_balance_cents ?? this.currentBalanceCents)
-        } else if (error || !data) {
-          const err = await extractFunctionError(error)
-          logFunctionError('session-end', err.status, err.statusText, err.message)
-        }
       }
+    } catch (err) {
+      console.warn('[sessionBillingService] Failed to sync session end to cloud:', err)
     } finally {
       this.sessionId = null
       this.decartSessionId = null
       this.billingState = 'idle'
       this.lastGenerationTickAt = 0
+      this.lastDeductionAt = 0
       this.lowBalanceWarning = false
       this.criticalBalanceWarning = false
       this.exhausted = false
-      this.consecutiveHeartbeatFailures = 0
       this.emitState()
     }
 

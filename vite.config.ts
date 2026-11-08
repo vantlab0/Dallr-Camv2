@@ -12,6 +12,9 @@ export default defineConfig({
       '@': path.resolve(import.meta.dirname, './src'),
     },
   },
+  // Expose both VITE_* and DECART_* env vars to the client bundle.
+  // This allows import.meta.env.DECART_API_KEY to work without the VITE_ prefix.
+  envPrefix: ['VITE_', 'DECART_'],
   test: {
     globals: true,
     environment: 'jsdom',
