@@ -106,9 +106,57 @@ export class DecartStreamService {
     this.listeners.onStateChange?.(newState)
   }
 
+  /**
+   * Request camera and microphone permission explicitly before starting the stream.
+   * Returns the permission state so callers can decide whether to proceed.
+   */
+  public async requestCameraPermission(): Promise<{ granted: boolean; error?: string }> {
+    try {
+      // Check if camera permission is already granted (may not be available in all environments)
+      let cameraPermission: PermissionState = 'prompt'
+      let micPermission: PermissionState = 'prompt'
+      try {
+        const cam = await navigator.permissions.query({ name: 'camera' as PermissionName })
+        const mic = await navigator.permissions.query({ name: 'microphone' as PermissionName })
+        cameraPermission = cam.state
+        micPermission = mic.state
+      } catch {
+        // Permissions API not available — fall through to getUserMedia probe
+      }
+
+      if (cameraPermission === 'granted' && micPermission === 'granted') {
+        return { granted: true }
+      }
+
+      // Permission not yet granted — request it via getUserMedia
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: true,
+      })
+
+      // Release the probe stream immediately — we just needed to trigger the permission dialog
+      stream.getTracks().forEach((track) => track.stop())
+
+      return { granted: true }
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'NotAllowedError') {
+        return { granted: false, error: 'Camera or microphone permission denied. Please allow device access.' }
+      } else if (err instanceof DOMException && err.name === 'NotFoundError') {
+        return { granted: false, error: 'No camera or microphone input device found.' }
+      }
+      return { granted: false, error: err instanceof Error ? err.message : 'Failed to access camera.' }
+    }
+  }
+
   public async acquireLocalMedia(model = models.realtime('lucy-2.5')): Promise<MediaStream> {
     if (this.localStream) {
       return this.localStream
+    }
+
+    // Ensure camera/mic permission has been requested before opening the media stream
+    const permission = await this.requestCameraPermission()
+    if (!permission.granted) {
+      throw new Error(permission.error || 'Camera or microphone permission is required to start the live stream.')
     }
 
     try {
@@ -154,6 +202,18 @@ export class DecartStreamService {
     this.lastImageRef = referenceImage
 
     this.updateState('preparing')
+
+    // Request camera/mic permission BEFORE starting Decart connection or billing.
+    // If the user denies permission, we fail fast and never touch billing.
+    const cameraPermission = await this.requestCameraPermission()
+    if (!cameraPermission.granted) {
+      this.updateState('failed')
+      this.isStartingStream = false
+      this.cleanupMedia()
+      const errorMsg = cameraPermission.error || 'Camera or microphone permission is required to start the live stream.'
+      this.listeners.onError?.({ code: 'CAMERA_PERMISSION_DENIED', message: errorMsg })
+      throw new Error(errorMsg)
+    }
 
     try {
       const model = models.realtime('lucy-2.5')
