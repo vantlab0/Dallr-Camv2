@@ -2,8 +2,11 @@ name: Build and Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [ "main" ]
+    tags: [ "v*" ]
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -24,6 +27,9 @@ jobs:
         with:
           toolchain: stable
           target: x86_64-pc-windows-msvc
+
+      - name: Install WiX Toolset
+        run: winget install WiXToolset.WiX3
 
       - name: Build Tauri app
         run: npm run tauri build
