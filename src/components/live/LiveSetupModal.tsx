@@ -16,11 +16,13 @@ import {
   RotateCcw,
   Wallet,
   Loader2,
+  KeyRound,
 } from 'lucide-react'
 import { validateAndProcessReferenceImage, ImageValidationError } from '@/services/imageService'
 import { useLiveSession } from '@/hooks/useLiveSession'
 import { promptManager, DEFAULT_TRANSFORMATION_PROMPT } from '@/config/prompts'
 import { LiveStreamView } from '@/components/live/LiveStreamView'
+import { decartService } from '@/services/decartService'
 import { decartStreamService } from '@/services/decartStreamService'
 import { streamRelayService } from '@/services/streamRelayService'
 import { videoWindowManager } from '@/services/videoWindowManager'
@@ -56,10 +58,18 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
   const [isStartingLive, setIsStartingLive] = useState<boolean>(false)
   const isStartingLiveRef = useRef<boolean>(false)
 
+  // Decart credentials: a build-time key is preferred; otherwise the user can paste one
+  // here and it is stored on this device only.
+  const [hasApiKey, setHasApiKey] = useState<boolean>(() => decartService.hasConfiguredApiKey())
+  const [apiKeyInput, setApiKeyInput] = useState<string>('')
+  const [apiKeyError, setApiKeyError] = useState<string | null>(null)
+
   // Real-time Decart live stream state
   const [isStreaming, setIsStreaming] = useState<boolean>(false)
   const [streamStatus, setStreamStatus] = useState<LiveSessionStatus>('idle')
   const [streamError, setStreamError] = useState<string | null>(null)
+  const [streamErrorDetails, setStreamErrorDetails] = useState<string | null>(null)
+  const [isRetryingStream, setIsRetryingStream] = useState<boolean>(false)
   const [streamSessionInfo, setStreamSessionInfo] = useState<LiveStreamSessionInfo | null>(null)
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null)
   const [localStream, setLocalStream] = useState<MediaStream | null>(null)
@@ -104,6 +114,7 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
       },
       onError: (err) => {
         setStreamError(err.message)
+        setStreamErrorDetails(err.details ?? null)
       },
       onGenerationTick: (tick) => {
         setElapsedSeconds(tick.seconds)
@@ -195,10 +206,31 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
       setLocalStream(null)
       setElapsedSeconds(0)
       setUsageUSD(0)
+      setStreamError(null)
+      setStreamErrorDetails(null)
       resetSession()
       onClose()
     }
   }, [resetSession, onClose])
+
+  // Saves a user-pasted Decart key locally so the installed app can stream without a rebuild.
+  const handleSaveApiKey = () => {
+    try {
+      decartService.setRuntimeApiKey(apiKeyInput)
+      setHasApiKey(true)
+      setApiKeyError(null)
+      setApiKeyInput('')
+    } catch (err: unknown) {
+      setApiKeyError(err instanceof Error ? err.message : 'Invalid API key.')
+    }
+  }
+
+  const handleChangeApiKey = () => {
+    decartService.clearRuntimeApiKey()
+    setHasApiKey(decartService.hasConfiguredApiKey())
+    setApiKeyInput('')
+    setApiKeyError(null)
+  }
 
   // Direct Go Live connection: prepares session and connects directly to Decart Lucy 2.5
   const handleGoLive = async () => {
@@ -208,6 +240,12 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
 
     if (!preparedImage) {
       setImageError('Please select a reference image before starting the live video call.')
+      return
+    }
+
+    if (!decartService.hasConfiguredApiKey()) {
+      setHasApiKey(false)
+      setApiKeyError('Add your Decart API key above before starting the live stream.')
       return
     }
 
@@ -225,29 +263,61 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
 
       setIsStreaming(true)
       setStreamError(null)
+      setStreamErrorDetails(null)
 
-      // Open borderless video window FIRST so it displays the reference image immediately
-      // while we connect to the Decart server in the background.
-      await videoWindowManager.openVideoWindow({
-        referenceImageDataUrl: preparedImage.dataUrl,
-        onClose: () => {
-          void handleEndLiveStream()
-        },
-      })
-
-      // Then connect to Decart Lucy 2.5 and start streaming
+      // Connect FIRST. The camera must start on its own without racing the creation of
+      // the borderless output window (which takes focus and can stall rendering). The
+      // output window is opened only once the Decart session is actually live.
       const session = await decartStreamService.startLiveStream({
         referenceImage: preparedImage,
         prompt,
         ratePerSecondUSD: prep.ratePerSecondUSD ?? 0.04,
       })
       setStreamSessionInfo(session)
+
+      await videoWindowManager.openVideoWindow({
+        referenceImageDataUrl: preparedImage.dataUrl,
+        onClose: () => {
+          void handleEndLiveStream()
+        },
+      })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to connect to Decart Lucy 2.5 stream.'
       setStreamError(msg)
     } finally {
       setIsStartingLive(false)
       isStartingLiveRef.current = false
+    }
+  }
+
+  /**
+   * Retries a failed session without leaving the live view: releases the previous
+   * camera/WebRTC state, then runs the normal Go Live flow again.
+   */
+  const handleRetryStream = async () => {
+    if (isRetryingStream || isStartingLiveRef.current) return
+
+    setIsRetryingStream(true)
+    try {
+      try {
+        await decartStreamService.endLiveStream()
+      } catch {
+        // ignore teardown failures
+      }
+      await videoWindowManager.closeVideoWindow()
+
+      setRemoteStream(null)
+      setLocalStream(null)
+      setStreamSessionInfo(null)
+      setElapsedSeconds(0)
+      setUsageUSD(0)
+      setStreamError(null)
+      setStreamErrorDetails(null)
+      setStreamStatus('idle')
+
+      await handleGoLive()
+    } finally {
+      setIsRetryingStream(false)
     }
   }
 
@@ -298,6 +368,7 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
           <LiveStreamView
             status={streamStatus}
             error={streamError}
+            errorDetails={streamErrorDetails}
             sessionInfo={streamSessionInfo}
             remoteStream={remoteStream}
             localStream={localStream}
@@ -309,7 +380,13 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
             insufficientFundsNotice={insufficientFundsNotice}
             onUpdatePrompt={handleUpdatePrompt}
             onEndStream={handleEndLiveStream}
-            onDismissError={() => setStreamError(null)}
+            onDismissError={() => {
+              setStreamError(null)
+              setStreamErrorDetails(null)
+            }}
+            onRetry={() => {
+              void handleRetryStream()
+            }}
           />
         </div>
       ) : (
@@ -480,6 +557,56 @@ export const LiveSetupModal: React.FC<LiveSetupModalProps> = ({
               </p>
             )}
           </div>
+
+          {/* Decart API key setup */}
+          {!hasApiKey ? (
+            <div className="rounded-lg border border-amber-900/60 bg-amber-950/20 p-2.5 space-y-1.5">
+              <div className="flex items-center gap-2">
+                <KeyRound className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                <input
+                  type="password"
+                  value={apiKeyInput}
+                  onChange={(e) => {
+                    setApiKeyInput(e.target.value)
+                    setApiKeyError(null)
+                  }}
+                  placeholder="Paste Decart API key (dct_...)"
+                  autoComplete="off"
+                  spellCheck={false}
+                  disabled={isSessionLoading}
+                  className="flex-1 min-w-0 px-2.5 py-1.5 text-xs bg-[#09090b] border border-[#27272a] rounded-md text-[#f4f4f5] focus:outline-none focus:border-[#ef4444] placeholder:text-[#52525b]"
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleSaveApiKey}
+                  disabled={!apiKeyInput.trim() || isSessionLoading}
+                >
+                  Save
+                </Button>
+              </div>
+              <p className={`text-[10px] leading-relaxed ${apiKeyError ? 'text-red-300' : 'text-amber-200/60'}`}>
+                {apiKeyError ||
+                  'Required for the video engine. Stored on this device only — get a key at platform.decart.ai.'}
+              </p>
+            </div>
+          ) : !decartService.hasBuildTimeApiKey() && decartService.hasRuntimeApiKey() ? (
+            <div className="flex items-center justify-between px-3.5 py-2.5 rounded-lg bg-emerald-950/20 border border-emerald-900/50 text-xs">
+              <div className="flex items-center gap-2 text-emerald-200/90">
+                <KeyRound className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Decart API key saved on this device.</span>
+              </div>
+              <button
+                type="button"
+                onClick={handleChangeApiKey}
+                className="text-emerald-300 hover:text-emerald-200 underline underline-offset-2"
+                disabled={isSessionLoading}
+              >
+                Change
+              </button>
+            </div>
+          ) : null}
 
           {/* Wallet Balance Pre-check Notice */}
           <div className="flex items-center justify-between px-3.5 py-2.5 rounded-lg bg-[#141418] border border-[#27272a] text-xs">
