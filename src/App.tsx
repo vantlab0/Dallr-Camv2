@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import { AuthProvider } from './contexts/AuthContext'
 import { useAuth } from './hooks/useAuth'
 import { AuthPage } from './pages/AuthPage'
 import { DashboardPage } from './pages/DashboardPage'
+import { SettingsPage } from './pages/SettingsPage'
 import { VideoOutputPage } from './pages/VideoOutputPage'
 import { Video } from 'lucide-react'
 
@@ -13,6 +15,7 @@ function isVideoOutputWindow(): boolean {
 
 function AppContent() {
   const { user, profile, isAuthenticated, isLoading, signOut } = useAuth()
+  const [view, setView] = useState<'dashboard' | 'settings'>('dashboard')
 
   if (isVideoOutputWindow()) {
     return <VideoOutputPage />
@@ -37,12 +40,27 @@ function AppContent() {
     return <AuthPage />
   }
 
+  const userEmail = user.email
+  const displayName = profile?.display_name || user.displayName
+
+  if (view === 'settings') {
+    return (
+      <SettingsPage
+        userEmail={userEmail}
+        displayName={displayName}
+        onSignOut={signOut}
+        onBack={() => setView('dashboard')}
+      />
+    )
+  }
+
   return (
     <DashboardPage
       userId={user.id}
-      userEmail={user.email}
-      displayName={profile?.display_name || user.displayName}
+      userEmail={userEmail}
+      displayName={displayName}
       onSignOut={signOut}
+      onOpenSettings={() => setView('settings')}
     />
   )
 }

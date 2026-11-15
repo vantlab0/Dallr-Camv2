@@ -6,10 +6,10 @@ import { TopUpModal } from '@/components/wallet/TopUpModal'
 import { TransactionHistory } from '@/components/wallet/TransactionHistory'
 import { LiveSetupModal } from '@/components/live/LiveSetupModal'
 import { CompactLiveStatus } from '@/components/live/CompactLiveStatus'
+import { VirtualCameraInstallModal } from '@/components/live/VirtualCameraInstallModal'
 import { decartStreamService } from '@/services/decartStreamService'
-import { videoWindowManager } from '@/services/videoWindowManager'
-import { streamRelayService } from '@/services/streamRelayService'
 import { sessionBillingService } from '@/services/sessionBillingService'
+import { virtualCameraService, type VirtualCameraStatus } from '@/services/virtualCameraService'
 import { useWallet } from '@/hooks/useWallet'
 import { Layers, ShieldCheck, Zap } from 'lucide-react'
 
@@ -18,6 +18,7 @@ interface DashboardPageProps {
   userEmail: string
   displayName?: string
   onSignOut: () => void
+  onOpenSettings?: () => void
 }
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({
@@ -25,6 +26,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   userEmail,
   displayName,
   onSignOut,
+  onOpenSettings,
 }) => {
   const {
     balanceUSD,
@@ -43,17 +45,16 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   const [isTopUpOpen, setIsTopUpOpen] = useState(false)
   const [isLiveSetupOpen, setIsLiveSetupOpen] = useState(false)
 
+  // Virtual camera setup prompt (shown on app open if not installed)
+  const [isVirtualCamModalOpen, setIsVirtualCamModalOpen] = useState(false)
+  const [virtualCamStatus, setVirtualCamStatus] = useState<VirtualCameraStatus | null>(null)
+
   // Live session status tracking for dashboard
   const [isStreamActive, setIsStreamActive] = useState<boolean>(false)
   const [isConnected, setIsConnected] = useState<boolean>(false)
   const [isEnding, setIsEnding] = useState<boolean>(false)
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0)
-  const [isOutputWindowOpen, setIsOutputWindowOpen] = useState<boolean>(false)
-
-  const checkOutputWindow = React.useCallback(async () => {
-    const open = await videoWindowManager.isWindowOpen()
-    setIsOutputWindowOpen(open)
-  }, [])
+  const [billingBalanceUSD, setBillingBalanceUSD] = useState<number | null>(null)
 
   React.useEffect(() => {
     decartStreamService.setListeners({
@@ -66,6 +67,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           setIsConnected(false)
           setIsEnding(false)
           setElapsedSeconds(0)
+          setBillingBalanceUSD(null)
           void refreshWallet()
         }
       },
@@ -74,27 +76,30 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       },
     })
 
-    const interval = setInterval(() => {
-      void checkOutputWindow()
-    }, 1000)
+    sessionBillingService.setListeners({
+      onStateChange: (state) => {
+        if (state.isActive || state.billingState === 'paused') {
+          setBillingBalanceUSD(state.currentBalanceUSD)
+        } else if (state.billingState === 'ended' || state.billingState === 'idle') {
+          // Keep last known billing balance briefly until DB refresh completes.
+          setBillingBalanceUSD((prev) => (state.billedCents > 0 ? state.currentBalanceUSD : prev))
+        }
+      },
+    })
 
-    return () => {
-      clearInterval(interval)
-    }
-  }, [checkOutputWindow, refreshWallet])
+    return () => {}
+  }, [refreshWallet])
 
   const handleEndLiveSession = async () => {
     setIsEnding(true)
     try {
-      streamRelayService.notifySessionEnded()
-      await videoWindowManager.closeVideoWindow()
       await decartStreamService.endLiveStream()
       await sessionBillingService.endSession()
     } finally {
       setIsStreamActive(false)
       setIsEnding(false)
-      setIsOutputWindowOpen(false)
       setElapsedSeconds(0)
+      setBillingBalanceUSD(null)
       void refreshWallet()
     }
   }
@@ -112,28 +117,40 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     }
   }, [])
 
-  const handleReopenOutputWindow = async () => {
-    await videoWindowManager.openVideoWindow({
-      onClose: () => {
-        void handleEndLiveSession()
-      },
-    })
-    setIsOutputWindowOpen(true)
-    const remoteStream = decartStreamService.getRemoteStream()
-    if (remoteStream) {
-      streamRelayService.startBroadcasting(remoteStream)
+  // Prompt to install "Dallr Cam" virtual camera on app open if not detected.
+  React.useEffect(() => {
+    let cancelled = false
+    const checkVirtualCamera = async () => {
+      try {
+        // Small delay to allow device enumeration to settle after startup.
+        await new Promise((r) => setTimeout(r, 800))
+        const status = await virtualCameraService.getStatus()
+        if (!cancelled) {
+          setVirtualCamStatus(status)
+          if (!status.installed) {
+            setIsVirtualCamModalOpen(true)
+          }
+        }
+      } catch {
+        // ignore detection errors on startup
+      }
     }
-  }
+    void checkVirtualCamera()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
-  const handleFocusOutputWindow = async () => {
-    await videoWindowManager.focusVideoWindow()
-  }
+  // Output is published to the OS-level "Dallr Cam" virtual camera (no borderless output window).
+
+  const effectiveBalanceUSD = billingBalanceUSD ?? balanceUSD
 
   return (
     <DashboardLayout
       userEmail={userEmail}
       displayName={displayName}
       onSignOut={onSignOut}
+      onOpenSettings={onOpenSettings}
     >
       <div className="space-y-8">
         {/* Welcome Section */}
@@ -160,10 +177,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
             isConnected={isConnected}
             isEnding={isEnding}
             elapsedSeconds={elapsedSeconds}
-            balanceUSD={balanceUSD}
-            isOutputWindowOpen={isOutputWindowOpen}
-            onReopenOutputWindow={handleReopenOutputWindow}
-            onFocusOutputWindow={handleFocusOutputWindow}
+            balanceUSD={effectiveBalanceUSD}
             onEndSession={handleEndLiveSession}
           />
         )}
@@ -172,7 +186,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="md:col-span-1">
             <BalanceCard
-              balanceUSD={balanceUSD}
+              balanceUSD={effectiveBalanceUSD}
               isLoading={isLoading}
               isProcessing={isProcessing}
               error={error}
@@ -231,11 +245,24 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       <LiveSetupModal
         isOpen={isLiveSetupOpen}
         userId={userId}
-        currentBalanceUSD={balanceUSD}
-        onClose={() => setIsLiveSetupOpen(false)}
+        currentBalanceUSD={effectiveBalanceUSD}
+        onClose={() => {
+          setIsLiveSetupOpen(false)
+          setBillingBalanceUSD(null)
+          void refreshWallet()
+        }}
         onTopUpClick={() => {
           setIsLiveSetupOpen(false)
           setIsTopUpOpen(true)
+        }}
+      />
+
+      <VirtualCameraInstallModal
+        isOpen={isVirtualCamModalOpen}
+        status={virtualCamStatus}
+        onClose={() => setIsVirtualCamModalOpen(false)}
+        onInstalled={() => {
+          setIsVirtualCamModalOpen(false)
         }}
       />
     </DashboardLayout>

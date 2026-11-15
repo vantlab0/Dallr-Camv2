@@ -5,6 +5,7 @@ interface DashboardLayoutProps {
   userEmail: string
   displayName?: string
   onSignOut: () => void
+  onOpenSettings?: () => void
   children: React.ReactNode
 }
 
@@ -12,11 +13,17 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
   userEmail,
   displayName,
   onSignOut,
+  onOpenSettings,
   children,
 }) => {
   return (
     <div className="min-h-screen bg-[#09090b] text-[#f4f4f5] flex flex-col">
-      <Header userEmail={userEmail} displayName={displayName} onSignOut={onSignOut} />
+      <Header
+        userEmail={userEmail}
+        displayName={displayName}
+        onSignOut={onSignOut}
+        onOpenSettings={onOpenSettings}
+      />
       <main className="flex-1 max-w-6xl w-full mx-auto px-6 py-8">
         {children}
       </main>

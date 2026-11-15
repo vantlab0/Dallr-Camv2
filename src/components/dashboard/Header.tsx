@@ -1,13 +1,19 @@
 import React from 'react'
-import { Video, LogOut, ShieldCheck, Activity } from 'lucide-react'
+import { Video, LogOut, ShieldCheck, Activity, Settings } from 'lucide-react'
 
 interface HeaderProps {
   userEmail: string
   displayName?: string
   onSignOut: () => void
+  onOpenSettings?: () => void
 }
 
-export const Header: React.FC<HeaderProps> = ({ userEmail, displayName, onSignOut }) => {
+export const Header: React.FC<HeaderProps> = ({
+  userEmail,
+  displayName,
+  onSignOut,
+  onOpenSettings,
+}) => {
   const initial = (displayName || userEmail).charAt(0).toUpperCase()
 
   return (
@@ -52,14 +58,26 @@ export const Header: React.FC<HeaderProps> = ({ userEmail, displayName, onSignOu
           </div>
         </div>
 
-        <button
-          onClick={onSignOut}
-          title="Sign out"
-          aria-label="Sign out"
-          className="text-[#71717a] hover:text-[#ef4444] p-1.5 rounded-lg hover:bg-[#1a1a1f] transition-colors cursor-pointer"
-        >
-          <LogOut className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          {onOpenSettings && (
+            <button
+              onClick={onOpenSettings}
+              title="Settings"
+              aria-label="Settings"
+              className="text-[#71717a] hover:text-[#f4f4f5] p-1.5 rounded-lg hover:bg-[#1a1a1f] transition-colors cursor-pointer"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+          )}
+          <button
+            onClick={onSignOut}
+            title="Sign out"
+            aria-label="Sign out"
+            className="text-[#71717a] hover:text-[#ef4444] p-1.5 rounded-lg hover:bg-[#1a1a1f] transition-colors cursor-pointer"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        </div>
       </div>
     </header>
   )
