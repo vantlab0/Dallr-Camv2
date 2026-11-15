@@ -3,13 +3,12 @@ import { DashboardLayout } from '@/components/dashboard/DashboardLayout'
 import { Button } from '@/components/ui/Button'
 import {
   Camera,
-  Download,
   RefreshCw,
   AlertCircle,
   CheckCircle2,
-  Loader2,
   ArrowLeft,
   Monitor,
+  Terminal,
 } from 'lucide-react'
 import { virtualCameraService, type VirtualCameraStatus } from '@/services/virtualCameraService'
 
@@ -28,33 +27,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 }) => {
   const [status, setStatus] = useState<VirtualCameraStatus | null>(null)
   const [isChecking, setIsChecking] = useState(false)
-  const [isInstalling, setIsInstalling] = useState(false)
-  const [installNotice, setInstallNotice] = useState<string | null>(null)
-  const [installProgress, setInstallProgress] = useState<string>('')
 
   const installed = status?.installed ?? false
-
-  const progressLabel = (() => {
-    switch (installProgress) {
-      case 'starting':
-        return 'Starting driver installation…'
-      case 'awaiting_uac':
-        return 'Waiting for administrator approval (UAC)…'
-      case 'uac_accepted':
-        return 'Administrator approval granted. Starting installation…'
-      case 'registering_32':
-        return 'Registering 32-bit virtual camera driver…'
-      case 'registering_64':
-        return 'Registering 64-bit virtual camera driver…'
-      case 'completed':
-        return 'Installation completed. Verifying device…'
-      default:
-        if (installProgress.startsWith('error:')) {
-          return `Installation failed: ${installProgress.slice('error:'.length)}`
-        }
-        return null
-    }
-  })()
 
   const refreshStatus = useCallback(async () => {
     setIsChecking(true)
@@ -69,72 +43,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   useEffect(() => {
     void refreshStatus()
   }, [refreshStatus])
-
-  // Poll in-app installation progress while running.
-  useEffect(() => {
-    if (!isInstalling) return
-    let cancelled = false
-
-    const poll = async () => {
-      try {
-        const p = await virtualCameraService.getInstallProgress()
-        if (cancelled) return
-        setInstallProgress(p)
-
-        if (p === 'completed') {
-          setIsInstalling(false)
-          const s = await virtualCameraService.getStatus()
-          if (cancelled) return
-          setStatus(s)
-          if (!s.installed) {
-            setInstallNotice(
-              'Installation finished. If “Dallr Cam” is not detected yet, restart camera apps (or grant camera permission) and click Recheck status.',
-            )
-          } else {
-            setInstallNotice('“Dallr Cam” virtual camera is installed and ready to use.')
-          }
-          return
-        }
-
-        if (p.startsWith('error:')) {
-          setIsInstalling(false)
-          setInstallNotice(`Installation failed: ${p.slice('error:'.length)}`)
-          return
-        }
-
-        setTimeout(poll, 1000)
-      } catch {
-        if (!cancelled) setTimeout(poll, 1500)
-      }
-    }
-
-    void poll()
-    return () => {
-      cancelled = true
-    }
-  }, [isInstalling])
-
-  const handleInstall = async () => {
-    setIsInstalling(true)
-    setInstallNotice(null)
-    setInstallProgress('starting')
-    try {
-      const res = await virtualCameraService.install()
-      if (!res.launched) {
-        setIsInstalling(false)
-        setInstallProgress('')
-        if (res.error) setInstallNotice(res.error)
-      } else {
-        setInstallNotice(
-          'Installing the virtual camera driver directly. Make sure Dallr Cam is running as Administrator.',
-        )
-      }
-    } catch (err) {
-      setIsInstalling(false)
-      setInstallProgress('')
-      setInstallNotice(err instanceof Error ? err.message : 'Failed to start installation.')
-    }
-  }
 
   return (
     <DashboardLayout userEmail={userEmail} displayName={displayName} onSignOut={onSignOut}>
@@ -165,9 +73,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             <div className="flex-1">
               <h2 className="text-sm font-semibold text-[#f4f4f5]">Virtual Camera (“Dallr Cam”)</h2>
               <p className="text-xs text-[#a1a1aa] mt-1 leading-relaxed">
-                Installs and registers the <span className="text-[#f4f4f5] font-medium">Dallr Cam</span>{' '}
-                DirectShow virtual camera device on this Windows system so apps like WhatsApp, Zoom, Meet,
-                and Teams can select it as a camera source.
+                Dallr Cam publishes its transformed output to a system virtual camera device named{' '}
+                <span className="text-[#f4f4f5] font-medium">“Dallr Cam”</span>. Install and set up a
+                compatible virtual camera driver manually, then select “Dallr Cam” in apps like WhatsApp,
+                Zoom, Meet, and Teams.
               </p>
             </div>
           </div>
@@ -210,50 +119,51 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             )}
           </div>
 
-          {!installed && status?.message && (
-            <div className="flex items-start gap-2 rounded-lg border border-amber-900/60 bg-amber-950/20 p-2.5 text-xs text-amber-200/90">
-              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-              <span>{status.message}</span>
-            </div>
-          )}
-
-          {(isInstalling || progressLabel || installNotice) && (
-            <div className="rounded-lg border border-[#27272a] bg-[#121215] p-3 text-xs text-[#d4d4d8] space-y-1.5">
-              {(isInstalling || progressLabel) && (
-                <div className="flex items-center gap-2">
-                  {installProgress === 'completed' ? (
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  ) : installProgress.startsWith('error:') ? (
-                    <AlertCircle className="w-3.5 h-3.5 text-red-400" />
-                  ) : (
-                    <Loader2 className="w-3.5 h-3.5 text-[#ef4444] animate-spin" />
-                  )}
-                  <span>{progressLabel || 'Starting driver installation…'}</span>
-                </div>
-              )}
-              {installNotice && <div className="text-[#a1a1aa] leading-relaxed">{installNotice}</div>}
-            </div>
-          )}
-
-          {installed && !installNotice && (
+          {installed ? (
             <div className="flex items-center gap-2 rounded-lg border border-emerald-900/50 bg-emerald-950/20 p-2.5 text-xs text-emerald-200">
               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
               <span>
-                “Dallr Cam” is available. Select it in your calling app’s camera settings. If it doesn’t
-                appear, restart the calling app and ensure Dallr is running when streaming.
+                “Dallr Cam” is detected. Select it in your calling app’s camera settings. If it doesn’t
+                appear, restart the calling app and keep Dallr Cam running while streaming.
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-900/60 bg-amber-950/20 p-2.5 text-xs text-amber-200/90">
+              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <span>
+                {status?.message ||
+                  '“Dallr Cam” was not detected. Install and set up the virtual camera manually, then click Recheck status.'}
               </span>
             </div>
           )}
 
+          <div className="rounded-lg border border-[#27272a] bg-[#0e0e11] p-3 space-y-2 text-xs text-[#d4d4d8]">
+            <div className="flex items-center gap-2 text-[#f4f4f5] font-medium">
+              <Terminal className="w-4 h-4 text-[#ef4444]" />
+              Manual setup (Windows)
+            </div>
+            <ol className="list-decimal pl-5 space-y-1.5 text-[#a1a1aa] leading-relaxed">
+              <li>
+                Download and install a compatible UnityCapture/DirectShow virtual camera driver (32-bit and
+                64-bit filters) on this PC.
+              </li>
+              <li>
+                Register the device name as <span className="text-[#f4f4f5] font-medium">Dallr Cam</span>.
+                If you have the driver DLL files, run an <span className="text-[#f4f4f5]">Administrator</span>{' '}
+                Command Prompt in their folder and execute:
+              </li>
+            </ol>
+            <pre className="mt-1 whitespace-pre-wrap rounded-md border border-[#27272a] bg-[#09090b] p-2.5 text-[11px] text-[#e4e4e7] overflow-x-auto">
+{`regsvr32 /s "UnityCaptureFilter32.dll" "/i:UnityCaptureName=Dallr Cam"
+regsvr32 /s "UnityCaptureFilter64.dll" "/i:UnityCaptureName=Dallr Cam"`}
+            </pre>
+            <p className="text-[#a1a1aa] leading-relaxed">
+              After setup, restart camera apps (e.g. WhatsApp Desktop) and click <span className="text-[#f4f4f5]">Recheck status</span>.
+              Dallr Cam must be running when you want to stream to the virtual camera.
+            </p>
+          </div>
+
           <div className="flex flex-wrap items-center gap-2 pt-1">
-            <Button
-              variant="primary"
-              onClick={handleInstall}
-              isLoading={isInstalling}
-              leftIcon={<Download className="w-4 h-4" />}
-            >
-              {installed ? 'Reinstall “Dallr Cam” driver' : 'Install “Dallr Cam” driver'}
-            </Button>
             <Button
               variant="outline"
               onClick={() => void refreshStatus()}
@@ -263,12 +173,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               Recheck status
             </Button>
           </div>
-
-          <p className="text-[11px] text-[#71717a] leading-relaxed">
-            Installation registers the bundled virtual camera driver system-wide without a UAC prompt.
-            Run Dallr Cam as Administrator for this to succeed. After installing, you may need to restart
-            apps like WhatsApp Desktop before “Dallr Cam” appears in their camera list.
-          </p>
         </section>
       </div>
     </DashboardLayout>

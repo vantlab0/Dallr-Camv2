@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react'
+import React, { useState } from 'react'
 import { Modal } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
-import { Camera, Download, RefreshCw, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react'
+import { Camera, RefreshCw, AlertCircle, CheckCircle2, Terminal } from 'lucide-react'
 import { virtualCameraService, type VirtualCameraStatus } from '@/services/virtualCameraService'
 
 interface VirtualCameraInstallModalProps {
@@ -18,101 +18,10 @@ export const VirtualCameraInstallModal: React.FC<VirtualCameraInstallModalProps>
   onInstalled,
 }) => {
   const [isChecking, setIsChecking] = useState(false)
-  const [isInstalling, setIsInstalling] = useState(false)
-  const [installNotice, setInstallNotice] = useState<string | null>(null)
-  const [installProgress, setInstallProgress] = useState<string>('')
   const [checkResult, setCheckResult] = useState<VirtualCameraStatus | null>(null)
 
   const current = checkResult ?? status
   const installed = current?.installed ?? false
-
-  const progressLabel = (() => {
-    switch (installProgress) {
-      case 'starting':
-        return 'Starting driver installation…'
-      case 'awaiting_uac':
-        return 'Waiting for administrator approval (UAC)…'
-      case 'uac_accepted':
-        return 'Administrator approval granted. Starting installation…'
-      case 'registering_32':
-        return 'Registering 32-bit virtual camera driver…'
-      case 'registering_64':
-        return 'Registering 64-bit virtual camera driver…'
-      case 'completed':
-        return 'Installation completed. Verifying device…'
-      default:
-        if (installProgress.startsWith('error:')) {
-          return `Installation failed: ${installProgress.slice('error:'.length)}`
-        }
-        return null
-    }
-  })()
-
-  // Poll in-app installation progress while running (no external console window required).
-  useEffect(() => {
-    if (!isInstalling) return
-    let cancelled = false
-
-    const poll = async () => {
-      try {
-        const p = await virtualCameraService.getInstallProgress()
-        if (cancelled) return
-        setInstallProgress(p)
-
-        if (p === 'completed') {
-          setIsInstalling(false)
-          const s = await virtualCameraService.getStatus()
-          if (cancelled) return
-          setCheckResult(s)
-          if (s.installed) {
-            onInstalled()
-          } else {
-            setInstallNotice(
-              'Installation finished. If “Dallr Cam” is not detected yet, reopen camera apps or grant camera permission, then click Recheck.',
-            )
-          }
-          return
-        }
-
-        if (p.startsWith('error:')) {
-          setIsInstalling(false)
-          setInstallNotice(`Installation failed: ${p.slice('error:'.length)}`)
-          return
-        }
-
-        setTimeout(poll, 1000)
-      } catch {
-        if (!cancelled) setTimeout(poll, 1500)
-      }
-    }
-
-    void poll()
-    return () => {
-      cancelled = true
-    }
-  }, [isInstalling, onInstalled])
-
-  const handleInstall = async () => {
-    setIsInstalling(true)
-    setInstallNotice(null)
-    setInstallProgress('starting')
-    try {
-      const res = await virtualCameraService.install()
-      if (!res.launched) {
-        setIsInstalling(false)
-        setInstallProgress('')
-        if (res.error) setInstallNotice(res.error)
-      } else {
-        setInstallNotice(
-          'Installing the virtual camera driver directly. Make sure Dallr Cam is running as Administrator.',
-        )
-      }
-    } catch (err) {
-      setIsInstalling(false)
-      setInstallProgress('')
-      setInstallNotice(err instanceof Error ? err.message : 'Failed to start installation.')
-    }
-  }
 
   const handleRecheck = async () => {
     setIsChecking(true)
@@ -131,8 +40,8 @@ export const VirtualCameraInstallModal: React.FC<VirtualCameraInstallModalProps>
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title="Install Dallr Cam Virtual Camera"
-      description="To use live video in WhatsApp and other apps, Dallr Cam must publish to an OS-level virtual camera device named “Dallr Cam”."
+      title="Set Up Dallr Cam Virtual Camera"
+      description="To use live video in WhatsApp and other apps, you need an OS-level virtual camera device named “Dallr Cam”."
       maxWidth="md"
     >
       <div className="space-y-4">
@@ -141,12 +50,11 @@ export const VirtualCameraInstallModal: React.FC<VirtualCameraInstallModalProps>
             <Camera className="w-4 h-4" />
           </div>
           <div className="text-xs text-[#a1a1aa] leading-relaxed">
-            <p className="text-[#f4f4f5] font-medium">Virtual camera required (Windows)</p>
+            <p className="text-[#f4f4f5] font-medium">Manual virtual camera setup required (Windows)</p>
             <p className="mt-1">
-              Once installed, starting a call will automatically publish your transformed stream to the
-              <span className="text-[#f4f4f5] font-medium"> Dallr Cam </span>
-              camera so you can select it in WhatsApp, Zoom, Meet, Teams, and more. Run Dallr Cam as
-              Administrator so installation can proceed without a UAC prompt.
+              Download and install a compatible virtual camera driver yourself, then register it as
+              <span className="text-[#f4f4f5] font-medium"> “Dallr Cam”</span>. Once detected, Dallr
+              will publish your transformed stream to it for use in WhatsApp, Zoom, Meet, Teams, and more.
             </p>
           </div>
         </div>
@@ -162,26 +70,30 @@ export const VirtualCameraInstallModal: React.FC<VirtualCameraInstallModalProps>
               <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
               <span>
                 {current?.message ||
-                  'The “Dallr Cam” virtual camera device was not found on this system. Install the virtual camera driver, then recheck.'}
+                  'The “Dallr Cam” virtual camera device was not found on this system. Set it up manually, then recheck.'}
               </span>
             </div>
-            {(isInstalling || progressLabel || installNotice) && (
-              <div className="rounded-lg border border-[#27272a] bg-[#121215] p-2.5 text-xs text-[#d4d4d8] space-y-1.5">
-                {(isInstalling || progressLabel) && (
-                  <div className="flex items-center gap-2">
-                    {installProgress === 'completed' ? (
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                    ) : installProgress.startsWith('error:') ? (
-                      <AlertCircle className="w-3.5 h-3.5 text-red-400" />
-                    ) : (
-                      <Loader2 className="w-3.5 h-3.5 text-[#ef4444] animate-spin" />
-                    )}
-                    <span>{progressLabel || 'Starting driver installation…'}</span>
-                  </div>
-                )}
-                {installNotice && <div className="text-[#a1a1aa]">{installNotice}</div>}
+
+            <div className="rounded-lg border border-[#27272a] bg-[#121215] p-3 text-xs text-[#d4d4d8] space-y-2">
+              <div className="flex items-center gap-2 text-[#f4f4f5] font-medium">
+                <Terminal className="w-4 h-4 text-[#ef4444]" />
+                Manual setup steps
               </div>
-            )}
+              <ol className="list-decimal pl-5 space-y-1.5 text-[#a1a1aa] leading-relaxed">
+                <li>Download/install a compatible UnityCapture (DirectShow) virtual camera driver (32/64-bit).</li>
+                <li>
+                  Register it with the device name <span className="text-[#f4f4f5]">Dallr Cam</span> from an
+                  Administrator Command Prompt:
+                </li>
+              </ol>
+              <pre className="whitespace-pre-wrap rounded-md border border-[#27272a] bg-[#09090b] p-2.5 text-[11px] text-[#e4e4e7] overflow-x-auto">
+{`regsvr32 /s "UnityCaptureFilter32.dll" "/i:UnityCaptureName=Dallr Cam"
+regsvr32 /s "UnityCaptureFilter64.dll" "/i:UnityCaptureName=Dallr Cam"`}
+              </pre>
+              <p className="text-[#a1a1aa] leading-relaxed">
+                Restart camera apps if needed, then click Recheck. Keep Dallr Cam running while streaming.
+              </p>
+            </div>
           </div>
         )}
 
@@ -189,26 +101,14 @@ export const VirtualCameraInstallModal: React.FC<VirtualCameraInstallModalProps>
           <Button variant="ghost" onClick={onClose}>
             Close
           </Button>
-          <div className="flex items-center gap-2">
-            {!installed && (
-              <Button
-                variant="secondary"
-                onClick={handleInstall}
-                isLoading={isInstalling}
-                leftIcon={<Download className="w-4 h-4" />}
-              >
-                Install “Dallr Cam”
-              </Button>
-            )}
-            <Button
-              variant={installed ? 'primary' : 'outline'}
-              onClick={handleRecheck}
-              isLoading={isChecking}
-              leftIcon={<RefreshCw className="w-4 h-4" />}
-            >
-              {installed ? 'Continue' : 'I’ve installed it / Recheck'}
-            </Button>
-          </div>
+          <Button
+            variant={installed ? 'primary' : 'outline'}
+            onClick={handleRecheck}
+            isLoading={isChecking}
+            leftIcon={<RefreshCw className="w-4 h-4" />}
+          >
+            {installed ? 'Continue' : 'I’ve set it up / Recheck'}
+          </Button>
         </div>
       </div>
     </Modal>
