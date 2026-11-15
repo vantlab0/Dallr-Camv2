@@ -37,7 +37,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const progressLabel = (() => {
     switch (installProgress) {
       case 'starting':
-        return 'Preparing installation…'
+      case 'awaiting_uac':
+        return 'Waiting for administrator approval (UAC)…'
+      case 'uac_accepted':
+        return 'Administrator approval granted. Starting installation…'
       case 'registering_32':
         return 'Registering 32-bit virtual camera driver…'
       case 'registering_64':
@@ -113,7 +116,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const handleInstall = async () => {
     setIsInstalling(true)
     setInstallNotice(null)
-    setInstallProgress('starting')
+    setInstallProgress('awaiting_uac')
     try {
       const res = await virtualCameraService.install()
       if (!res.launched) {
@@ -122,7 +125,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         if (res.error) setInstallNotice(res.error)
       } else {
         setInstallNotice(
-          'Approve the administrator (UAC) prompt to continue. The driver is being registered system-wide.',
+          'Approve the administrator (UAC) prompt to continue. The status will update as soon as permission is granted.',
         )
       }
     } catch (err) {
