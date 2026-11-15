@@ -91,39 +91,25 @@ fn install_virtual_camera(app: tauri::AppHandle) -> Result<(), String> {
         let status_file = normalize_win_path(&install_status_path()).replace('\'', "''");
 
         // Initialize status (app polls this file for in-app progress).
-        let _ = fs::write(install_status_path(), "awaiting_uac");
+        // Runs registration directly (no UAC prompt). If the app is not running as administrator,
+        // registration may fail and the error will be reported in the status file.
+        let _ = fs::write(install_status_path(), "starting");
 
-        // Elevated script performs registration and reports progress. Runs once (single UAC prompt).
-        // It writes `uac_accepted` immediately so the UI can detect that elevation was granted.
-        let inner = format!(
+        let ps_command = format!(
             "$ErrorActionPreference='Stop'; \
              $status='{status_file}'; $d32='{dll32s}'; $d64='{dll64s}'; \
              try {{ \
-               Set-Content -Path $status -Value 'uac_accepted' -Encoding UTF8; \
                Set-Content -Path $status -Value 'registering_32' -Encoding UTF8; \
                $p = Start-Process -FilePath 'regsvr32.exe' -ArgumentList @('/s', $d32, '/i:UnityCaptureName=Dallr Cam') -Wait -PassThru; \
-               if ($p.ExitCode -ne 0) {{ throw ('32-bit registration failed (code ' + $p.ExitCode + ')') }}; \
+               if ($p.ExitCode -ne 0) {{ throw ('32-bit registration failed (code ' + $p.ExitCode + '). Run the app as Administrator.') }}; \
                Set-Content -Path $status -Value 'registering_64' -Encoding UTF8; \
                $p = Start-Process -FilePath 'regsvr32.exe' -ArgumentList @('/s', $d64, '/i:UnityCaptureName=Dallr Cam') -Wait -PassThru; \
-               if ($p.ExitCode -ne 0) {{ throw ('64-bit registration failed (code ' + $p.ExitCode + ')') }}; \
+               if ($p.ExitCode -ne 0) {{ throw ('64-bit registration failed (code ' + $p.ExitCode + '). Run the app as Administrator.') }}; \
                Set-Content -Path $status -Value 'completed' -Encoding UTF8; \
              }} catch {{ \
                Set-Content -Path $status -Value ('error:' + $_.Exception.Message) -Encoding UTF8; \
                exit 1; \
              }}"
-        );
-
-        // Outer launcher requests elevation (UAC). If the user cancels/denies, report an error
-        // to the status file so the UI does not remain stuck waiting for approval.
-        let ps_command = format!(
-            "$ErrorActionPreference='Stop'; $status='{status_file}'; \
-             try {{ \
-               Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-Command','{}'); \
-             }} catch {{ \
-               Set-Content -Path $status -Value ('error:' + $_.Exception.Message) -Encoding UTF8; \
-               exit 1; \
-             }}",
-            inner.replace('\'', "''")
         );
 
         Command::new("powershell.exe")

@@ -29,6 +29,7 @@ export const VirtualCameraInstallModal: React.FC<VirtualCameraInstallModalProps>
   const progressLabel = (() => {
     switch (installProgress) {
       case 'starting':
+        return 'Starting driver installation…'
       case 'awaiting_uac':
         return 'Waiting for administrator approval (UAC)…'
       case 'uac_accepted':
@@ -94,7 +95,7 @@ export const VirtualCameraInstallModal: React.FC<VirtualCameraInstallModalProps>
   const handleInstall = async () => {
     setIsInstalling(true)
     setInstallNotice(null)
-    setInstallProgress('awaiting_uac')
+    setInstallProgress('starting')
     try {
       const res = await virtualCameraService.install()
       if (!res.launched) {
@@ -103,7 +104,7 @@ export const VirtualCameraInstallModal: React.FC<VirtualCameraInstallModalProps>
         if (res.error) setInstallNotice(res.error)
       } else {
         setInstallNotice(
-          'Approve the administrator (UAC) prompt to continue. The status will update as soon as permission is granted.',
+          'Installing the virtual camera driver directly. Make sure Dallr Cam is running as Administrator.',
         )
       }
     } catch (err) {
@@ -144,7 +145,8 @@ export const VirtualCameraInstallModal: React.FC<VirtualCameraInstallModalProps>
             <p className="mt-1">
               Once installed, starting a call will automatically publish your transformed stream to the
               <span className="text-[#f4f4f5] font-medium"> Dallr Cam </span>
-              camera so you can select it in WhatsApp, Zoom, Meet, Teams, and more.
+              camera so you can select it in WhatsApp, Zoom, Meet, Teams, and more. Run Dallr Cam as
+              Administrator so installation can proceed without a UAC prompt.
             </p>
           </div>
         </div>
@@ -174,7 +176,7 @@ export const VirtualCameraInstallModal: React.FC<VirtualCameraInstallModalProps>
                     ) : (
                       <Loader2 className="w-3.5 h-3.5 text-[#ef4444] animate-spin" />
                     )}
-                    <span>{progressLabel || 'Waiting for administrator approval (UAC)…'}</span>
+                    <span>{progressLabel || 'Starting driver installation…'}</span>
                   </div>
                 )}
                 {installNotice && <div className="text-[#a1a1aa]">{installNotice}</div>}

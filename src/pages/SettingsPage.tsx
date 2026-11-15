@@ -37,6 +37,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const progressLabel = (() => {
     switch (installProgress) {
       case 'starting':
+        return 'Starting driver installation…'
       case 'awaiting_uac':
         return 'Waiting for administrator approval (UAC)…'
       case 'uac_accepted':
@@ -116,7 +117,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const handleInstall = async () => {
     setIsInstalling(true)
     setInstallNotice(null)
-    setInstallProgress('awaiting_uac')
+    setInstallProgress('starting')
     try {
       const res = await virtualCameraService.install()
       if (!res.launched) {
@@ -125,7 +126,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         if (res.error) setInstallNotice(res.error)
       } else {
         setInstallNotice(
-          'Approve the administrator (UAC) prompt to continue. The status will update as soon as permission is granted.',
+          'Installing the virtual camera driver directly. Make sure Dallr Cam is running as Administrator.',
         )
       }
     } catch (err) {
@@ -227,7 +228,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   ) : (
                     <Loader2 className="w-3.5 h-3.5 text-[#ef4444] animate-spin" />
                   )}
-                  <span>{progressLabel || 'Waiting for administrator approval (UAC)…'}</span>
+                  <span>{progressLabel || 'Starting driver installation…'}</span>
                 </div>
               )}
               {installNotice && <div className="text-[#a1a1aa] leading-relaxed">{installNotice}</div>}
@@ -264,9 +265,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           </div>
 
           <p className="text-[11px] text-[#71717a] leading-relaxed">
-            Installation requires administrator approval (UAC) on Windows and registers the bundled virtual
-            camera driver system-wide. After installing, you may need to restart apps like WhatsApp Desktop
-            before “Dallr Cam” appears in their camera list.
+            Installation registers the bundled virtual camera driver system-wide without a UAC prompt.
+            Run Dallr Cam as Administrator for this to succeed. After installing, you may need to restart
+            apps like WhatsApp Desktop before “Dallr Cam” appears in their camera list.
           </p>
         </section>
       </div>
